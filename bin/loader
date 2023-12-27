@@ -1,0 +1,87 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
+
+require 'pathname'
+require 'stringio'
+
+class LoaderGenerator
+  def call
+    writer do |out|
+      out.puts <<~HEADER
+        # frozen_string_literal: true
+
+        # File generated automatically, do not edit
+        # See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
+
+      HEADER
+      yield.each do |auto_loader|
+        auto_loader.on_load do |_cpath, _value, abspath|
+          next if abspath !~ /.rb$/i # skip directories
+
+          out.puts "require '#{path_to_requirement(abspath)}'"
+        end
+        auto_loader.eager_load
+      end
+    end
+    true
+  end
+
+  private
+
+  def writer(&block)
+    output ? block.call(output) : File.open(loader_path, 'w', &block)
+  end
+
+  def path_to_requirement(abspath)
+    relative_path_from(loader_dir, abspath).sub(/.rb$/i, '')
+  end
+
+  def relative_path_from(base_dir, target_path)
+    target = Pathname.new(target_path)
+    base = Pathname.new(base_dir)
+    target.relative_path_from(base).to_s
+  end
+
+  attr_reader :loader_path, :loader_dir, :output
+
+  def initialize(loader_path, output = nil)
+    @loader_path = loader_path
+    @loader_dir = File.dirname(loader_path)
+    @output = output
+  end
+end
+
+class LoaderValidator
+  def call(&block)
+    StringIO.new.tap do |buffer|
+      LoaderGenerator.new(loader_path, buffer).call(&block)
+      buffer.rewind
+    end.read == current
+  end
+
+  private
+
+  def current
+    File.read(loader_path)
+  end
+
+  attr_reader :loader_path
+
+  def initialize(loader_path)
+    @loader_path = loader_path
+  end
+end
+
+require 'bundler/setup'
+
+loader_path = File.join(__dir__, '..', 'lib', 'basic_loader.rb')
+
+klass = ARGV[0] == 'generate' ? LoaderGenerator : LoaderValidator
+action = klass.new(loader_path)
+result = action.call do
+  require 'super_auth'
+  SuperAuth::AUTOLOADERS
+end
+exit 1 unless result

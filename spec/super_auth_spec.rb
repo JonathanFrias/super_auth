@@ -20,8 +20,6 @@ RSpec.describe SuperAuth do
       admin_group = Group.create(name: 'admin', parent: root_group)
         user_group = Group.create(name: 'user', parent: admin_group)
 
-    root_group.descendants
-
     descendants = root_group.descendants.sort_by(&:id)
     expect(descendants).to match_array([root_group, user_group, admin_group])
 
@@ -64,19 +62,22 @@ RSpec.describe SuperAuth do
   end
 
   it "can merge with permissions" do
-    ceo = User.create(name: 'CEO')
-    senior_developer = User.create(name: 'Señor Dev')
-    noob_developer = User.create(name: 'gotta get good')
-    marketing_bro = User.create(name: "Buy this pen!")
+    # read_access = Permission.create(name: 'read')
+    # write_access = Permission.create(name: 'write')
+    # reboot_access = Permission.create(name: 'reboot')
+    # invoice = Permission.create(name: 'invoice')
 
-    employee  = Role.create(name: 'employee')
-      accounting = Role.create(parent: employee)
+    # employee  = Role.create(name: 'employee')
+    #   accounting = Role.create(parent: employee)
 
-      prod_access = Role.create(name: 'production support', parent: employee)
-        web = Role.create(name: 'web', parent: prod_access)
-        db1 = Role.create(name: 'db1', parent: prod_access)
-        db2 = Role.create(name: 'db2', parent: prod_access)
+    #   prod_access = Role.create(name: 'production support', parent: employee)
+    #     web = Role.create(name: 'web', parent: prod_access)
+    #     db1 = Role.create(name: 'db1', parent: prod_access)
+    #     db2 = Role.create(name: 'db2', parent: prod_access)
 
-    Role.create(name: 'admin', permission: employee)
+    # Edge.create(role: prod_access, permission: read_access)
+    # Edge.create(role: prod_access, permission: write_access)
+    # Edge.create(role: prod_access, permission: reboot_access)
+    # Edge.create(role: accounting, permission: invoice)
   end
 end
