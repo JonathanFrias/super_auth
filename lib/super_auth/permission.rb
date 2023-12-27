@@ -1,2 +1,2 @@
-class Permission < Sequel::Model
+class SuperAuth::Permission < Sequel::Model(:permissions)
 end

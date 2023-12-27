@@ -1,11 +1,82 @@
 # frozen_string_literal: true
 
+require 'spec_helper'
+
 RSpec.describe SuperAuth do
-  it "has a version number" do
-    expect(SuperAuth::VERSION).not_to be nil
+  Group = SuperAuth::Group
+  User = SuperAuth::User
+  Edge = SuperAuth::Edge
+
+  let(:db) { Sequel::Model.db }
+
+  before do
+    db[:edges].delete
+    db[:groups].delete
+    db[:users].delete
   end
 
-  it "does something useful" do
-    expect(false).to eq(true)
+  it "can create a group tree" do
+    root_group = Group.create(name: 'root')
+      admin_group = Group.create(name: 'admin', parent: root_group)
+        user_group = Group.create(name: 'user', parent: admin_group)
+
+    root_group.descendants
+
+    descendants = root_group.descendants.sort_by(&:id)
+    expect(descendants).to match_array([root_group, user_group, admin_group])
+
+    expect(descendants.map { |d| d[:group_path] }).to eq ["#{root_group.id}", "#{root_group.id},#{admin_group.id}", "#{root_group.id},#{admin_group.id},#{user_group.id}"]
+  end
+
+  it "can merge users with groups" do
+    ceo = User.create(name: 'CEO')
+    senior_developer = User.create(name: 'Señor Dev')
+    noob_developer = User.create(name: 'gotta get good')
+    marketing_bro = User.create(name: "Buy this pen!")
+
+    organization = Group.create(name: 'Foobar Corp')
+      marketing = Group.create(name: 'marketing', parent: organization)
+
+      developers = Group.create(name: 'developers', parent: organization)
+        feature1 = Group.create(name: 'feature1', parent: developers)
+        _feature = Group.create(name: 'feature2', parent: developers)
+
+    Edge.create(user: ceo, group: organization)
+    Edge.create(user: senior_developer, group: developers)
+    Edge.create(user: marketing_bro, group: marketing)
+    Edge.create(user: noob_developer, group: feature1)
+
+    ceo_res, senior_developer_res, noob_developer_res, marketing_bro_res = User.with_groups.all.sort_by(&:id)
+    [
+      # result               user_id,                group_id,        group_name     parent_id,       group_path,                                            group_name_path
+      [ceo_res,              ceo.id,                 organization.id, 'Foobar Corp', nil,             "#{organization.id}",                                 "Foobar Corp"],
+      [senior_developer_res, senior_developer.id,    developers.id,   'developers',  organization.id, "#{organization.id},#{developers.id}",                "Foobar Corp,developers"],
+      [noob_developer_res,   noob_developer.id,      feature1.id,     'feature1',    developers.id,   "#{organization.id},#{developers.id},#{feature1.id}", "Foobar Corp,developers,feature1"],
+      [marketing_bro_res,    marketing_bro.id,       marketing.id,    'marketing',   organization.id, "#{organization.id},#{marketing.id}",                 "Foobar Corp,marketing"],
+    ].each do |res, user_id, group_id, group_name, parent_id, group_path, group_name_path|
+      expect(res.id.to_s).to eq user_id.to_s
+      expect(res[:group_id].to_s).to eq group_id.to_s
+      expect(res[:group_name]).to eq group_name
+      expect(res[:parent_id].to_s).to eq parent_id.to_s
+      expect(res[:group_path]).to eq group_path
+      expect(res[:group_name_path]).to eq group_name_path
+    end
+  end
+
+  it "can merge with permissions" do
+    ceo = User.create(name: 'CEO')
+    senior_developer = User.create(name: 'Señor Dev')
+    noob_developer = User.create(name: 'gotta get good')
+    marketing_bro = User.create(name: "Buy this pen!")
+
+    employee  = Role.create(name: 'employee')
+      accounting = Role.create(parent: employee)
+
+      prod_access = Role.create(name: 'production support', parent: employee)
+        web = Role.create(name: 'web', parent: prod_access)
+        db1 = Role.create(name: 'db1', parent: prod_access)
+        db2 = Role.create(name: 'db2', parent: prod_access)
+
+    Role.create(name: 'admin', permission: employee)
   end
 end

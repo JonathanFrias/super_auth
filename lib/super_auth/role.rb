@@ -1,2 +1,2 @@
-class Role < Sequel::Model
+class SuperAuth::Role < Sequel::Model(:roles)
 end

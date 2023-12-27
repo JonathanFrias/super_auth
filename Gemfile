@@ -1,10 +1,21 @@
 # frozen_string_literal: true
 
-source "https://rubygems.org"
+# See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
+module ::SuperAuth
+  AUTOLOADERS = []
+end
 
+source "https://rubygems.org"
 # Specify your gem's dependencies in super_auth.gemspec
 gemspec
 
 gem "rake", "~> 13.0"
-
 gem "rspec", "~> 3.0"
+gem "zeitwerk", "~> 2.6"
+
+
+group :development do
+  gem "pry"
+  gem "pg"
+  gem "sqlite3"
+end

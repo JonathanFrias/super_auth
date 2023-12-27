@@ -1,2 +1,2 @@
-class Resource < Sequel::Model
+class SuperAuth::Resource < Sequel::Model(:resources)
 end
