@@ -6,6 +6,8 @@ RSpec.describe SuperAuth do
   Group = SuperAuth::Group
   User = SuperAuth::User
   Edge = SuperAuth::Edge
+  Permission = SuperAuth::Permission
+  Role = SuperAuth::Role
 
   let(:db) { Sequel::Model.db }
 
@@ -13,6 +15,8 @@ RSpec.describe SuperAuth do
     db[:edges].delete
     db[:groups].delete
     db[:users].delete
+    db[:permissions].delete
+    db[:roles].delete
   end
 
   it "can create a group tree" do
@@ -61,23 +65,39 @@ RSpec.describe SuperAuth do
     end
   end
 
-  it "can merge with permissions" do
-    # read_access = Permission.create(name: 'read')
-    # write_access = Permission.create(name: 'write')
-    # reboot_access = Permission.create(name: 'reboot')
-    # invoice = Permission.create(name: 'invoice')
+  it "can merge permissions with roles" do
+    read_access = Permission.create(name: 'read')
+    write_access = Permission.create(name: 'write')
+    reboot_access = Permission.create(name: 'reboot')
+    invoice = Permission.create(name: 'invoice')
 
-    # employee  = Role.create(name: 'employee')
-    #   accounting = Role.create(parent: employee)
+    employee  = Role.create(name: 'employee')
+      accounting = Role.create(name: 'accounting', parent: employee)
 
-    #   prod_access = Role.create(name: 'production support', parent: employee)
-    #     web = Role.create(name: 'web', parent: prod_access)
-    #     db1 = Role.create(name: 'db1', parent: prod_access)
-    #     db2 = Role.create(name: 'db2', parent: prod_access)
+      prod_access = Role.create(name: 'production support', parent: employee)
+        web = Role.create(name: 'web', parent: prod_access)
+        db1 = Role.create(name: 'db1', parent: prod_access)
+        db2 = Role.create(name: 'db2', parent: prod_access)
 
-    # Edge.create(role: prod_access, permission: read_access)
-    # Edge.create(role: prod_access, permission: write_access)
-    # Edge.create(role: prod_access, permission: reboot_access)
-    # Edge.create(role: accounting, permission: invoice)
+    Edge.create(role: prod_access, permission: read_access)
+    Edge.create(role: prod_access, permission: write_access)
+    Edge.create(role: prod_access, permission: reboot_access)
+    Edge.create(role: accounting, permission: invoice)
+
+    read_res, write_res, reboot_res, invoice_res = Permission.with_roles.all.sort_by(&:id)
+    [
+      # result      permission_id,    role_id,        role_name             parent_id,      role_path,                          role_name_path
+      [read_res,    read_access.id,   prod_access.id, 'production support', employee.id,    "#{employee.id},#{prod_access.id}", "employee,production support"],
+      [write_res,   write_access.id,  prod_access.id, 'production support', employee.id,    "#{employee.id},#{prod_access.id}", "employee,production support"],
+      [reboot_res,  reboot_access.id, prod_access.id, 'production support', employee.id,    "#{employee.id},#{prod_access.id}", "employee,production support"],
+      [invoice_res, invoice.id,       accounting.id,  'accounting',         employee.id,    "#{employee.id},#{accounting.id}",  "employee,accounting"],
+    ].each do |res, permission_id, role_id, role_name, parent_id, role_path, role_name_path|
+      expect(res.id.to_s).to eq permission_id.to_s
+      expect(res[:role_id].to_s).to eq role_id.to_s
+      expect(res[:role_name]).to eq role_name
+      expect(res[:parent_id].to_s).to eq parent_id.to_s
+      expect(res[:role_path]).to eq role_path
+      expect(res[:role_name_path]).to eq role_name_path
+    end
   end
 end

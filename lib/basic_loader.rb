@@ -4,6 +4,7 @@
 # See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
 
 require 'super_auth/edge'
+require 'super_auth/nestable'
 require 'super_auth/group'
 require 'super_auth/permission'
 require 'super_auth/resource'
