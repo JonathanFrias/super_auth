@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    super_auth (0.1.0)
+    super_auth (0.1.2)
       sequel
 
 GEM
@@ -32,10 +32,12 @@ GEM
     sequel (5.75.0)
       bigdecimal
     sqlite3 (1.7.0-arm64-darwin)
+    sqlite3 (1.7.0-x86_64-linux)
     zeitwerk (2.6.12)
 
 PLATFORMS
   arm64-darwin-22
+  x86_64-linux
 
 DEPENDENCIES
   pg
