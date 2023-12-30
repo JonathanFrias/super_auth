@@ -3,6 +3,7 @@ Sequel.migration do
     create_table(:resources) do
       primary_key :id
 
+      String :name
       String :external_id # , null: false
 
       DateTime :created_at, null: false, default: Sequel::CURRENT_TIMESTAMP

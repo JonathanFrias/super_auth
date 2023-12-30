@@ -18,28 +18,32 @@ class SuperAuth::User < Sequel::Model(:users)
         Sequel[:edges][:group_id].as(:edge_group_id),
         Sequel[:edges][:user_id].as(:edge_user_id),
         Sequel[:edges][:role_id].as(:edge_role_id),
-        :group_path,
-        :group_name_path,
-        :parent_id
+        Sequel[:groups][:group_path],
+        Sequel[:groups][:group_name_path],
+        Sequel[:groups][:parent_id]
       )
     end
 
-    def with_permissions
-      with_edges.join(Permission.from(Permission.trees).as(:permissions), id: :permission_id).select(
+    def with_roles
+      with_edges.join(Role.from(Role.trees).as(:roles), id: :role_id).select(
         Sequel[:users][:id].as(:id),
         Sequel[:users][:id].as(:user_id),
-        Sequel[:permissions][:id].as(:permission_id),
+        Sequel[:roles][:id].as(:role_id),
         Sequel[:users][:name].as(:user_name),
-        Sequel[:permissions][:name].as(:permission_name),
+        Sequel[:roles][:name].as(:role_name),
         Sequel[:edges][:id].as(:edge_id),
         Sequel[:edges][:permission_id].as(:edge_permission_id),
         Sequel[:edges][:group_id].as(:edge_group_id),
         Sequel[:edges][:user_id].as(:edge_user_id),
         Sequel[:edges][:role_id].as(:edge_role_id),
-        :permission_path,
-        :permission_name_path,
-        :parent_id
+        Sequel[:roles][:role_path],
+        Sequel[:roles][:role_name_path],
+        Sequel[:roles][:parent_id]
       )
+    end
+
+    def with_roles_with_groups
+      with_groups_with_roles
     end
   end
 end

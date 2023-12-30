@@ -6,10 +6,10 @@ module SuperAuth::Nestable
     base.plugin :rcte_tree, {
       cte_name: base.cte_name(base),
       ancestors: {
-        dataset: -> { base.cte(model, base.cte_name, :asc, self.id) }
+        dataset: -> { base.cte(self.id, :asc) }
       },
       descendants: {
-        dataset: -> { base.cte(model, base.cte_name, :desc, self.parent_id) }
+        dataset: -> { base.cte(self.parent_id, :desc) }
       }
     }
 
@@ -19,13 +19,15 @@ module SuperAuth::Nestable
       end
 
       def trees
-        model.cte(model, model.cte_name, :desc)
+        model.cte(nil, :desc)
       end
     end
   end
 
   module ClassMethods
-    def cte(model, cte_name, direction = :desc, id = nil)
+    def cte(id = nil, direction = :desc)
+      model = self
+      cte_name = model.cte_name
       base_ds = model.select_all(pluralize)
 
       case direction
@@ -37,7 +39,11 @@ module SuperAuth::Nestable
           .select_all(pluralize)
         base_ds, recursive_ds = with_ascending_paths(base_ds, recursive_ds, cte_name)
       when :desc
-        base_ds = base_ds.where(parent_id: id)
+        if id
+          base_ds = base_ds.where(id: id)
+        else
+          base_ds = base_ds.where(parent_id: id)
+        end
 
         recursive_ds = model
           .join(cte_name, id: :parent_id)
