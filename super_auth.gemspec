@@ -8,7 +8,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Jonathan Frias"]
   spec.email = ["jonathan@gofrias.com"]
 
-  spec.summary = "Super authentication"
+  spec.summary = "Make Unauthenticated State Unrepresentable"
   spec.description = "Simple, yet super powerful authorization for you application"
   spec.homepage = "https://github.com/JonathanFrias/super_auth"
   spec.license = "MIT"
