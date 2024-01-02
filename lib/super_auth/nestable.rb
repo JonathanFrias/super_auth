@@ -110,7 +110,7 @@ module SuperAuth::Nestable
     end
 
     def pluralize(base = self)
-      "#{demodularize(base).downcase}s".to_sym
+      "super_auth_#{demodularize(base).downcase}s".to_sym
     end
 
     def singularize(base = self)
@@ -118,7 +118,7 @@ module SuperAuth::Nestable
     end
 
     def cte_name(base = self)
-      "#{pluralize(base)}_cte".to_sym
+      "super_auth_#{pluralize(base)}_cte".to_sym
     end
 
     def base_path(base = self)

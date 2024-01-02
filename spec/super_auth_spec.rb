@@ -13,11 +13,12 @@ RSpec.describe SuperAuth do
   let(:db) { Sequel::Model.db }
 
   before do
-    db[:edges].delete
-    db[:groups].delete
-    db[:users].delete
-    db[:permissions].delete
-    db[:roles].delete
+    db[:super_auth_edges].delete
+    db[:super_auth_groups].delete
+    db[:super_auth_users].delete
+    db[:super_auth_permissions].delete
+    db[:super_auth_roles].delete
+    db[:super_auth_resources].delete
   end
 
   it "can create a group tree" do
