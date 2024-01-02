@@ -27,12 +27,6 @@ SuperAuth is a rules engine engine that works on 5 different authorization conce
 - Resources
 
 The basis for how this works is that the rules engine is trying to match a user with a resource to determine access.
-It is easier to see visually:
-
-    +------+               +------------+
-    | User |<------?------>| Resource   |
-    +------+               +------------+
-
 The engine determines if it can find an authorization route betewen a user and a resource. It does so by looking at users, groups, roles, permissions.
 
                          +-------+       +------+
@@ -54,7 +48,20 @@ The engine determines if it can find an authorization route betewen a user and a
 The lines between the boxes are called [edges](https://en.wikipedia.org/wiki/Glossary_of_graph_theory#edge).
 Note that `Group` and `Role` trees.
 
-The code to run the following example is located in `spec/readme_spec.rb`.
+In general the super_auth has 5 different pathing strategies to search for access.
+
+    1. users <-> group[s] <-> role[s] <-> permission <-> resource
+    2. users <->              role[s] <-> permission <-> resource
+    3. users <-> group[s] <->             permission <-> resource
+    4. users <->                          permission <-> resource
+    5. users <->                                         resource
+
+Edges can be drawn between any 2 objects, allowing super_auth can seamlessly scale in complexity with you.
+When `Group` and `Role` are used, the rules will apply to all descedants. If there are any edges
+between the specified user and the resource, then access is granted.
+
+
+You can see usage examples `spec/example_spec.rb`.
 
 We're going to need some users:
 
@@ -151,21 +158,6 @@ With this, the following paths are created from Peter to the core_design_templat
     Which completes the circuit using the path
     user <-> group <-> group <-> role <-> permission <-> resource
 
-In general the super_auth has 5 different pathing strategies to search for access.
-
-    1. users <-> group[s] <-> role[s] <-> permission <-> resource
-    2. users <->              role[s] <-> permission <-> resource
-    3. users <-> group[s] <->             permission <-> resource
-    4. users <->                          permission <-> resource
-    5. users <->                                         resource
-
-When `Group` and `Role` are used, the rules will apply to all descedants. Since Edges can be drawn
-between any 2 objects, super_auth can seamlessly scale in complexity with you. For example this is valid:
-
-    Peter <-> core_design_template
-
-With this, you can completely bypass `Group`s and `Role`s and `Permission`s if they are not needed.
-So access is always allowed to a resource
 
 When you create/delete an edge new authorizations are generated and stored in the `super_auth` database table.
 Since the path is stored with the record, it trivial to audit access permissions using basic SQL.
