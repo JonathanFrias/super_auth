@@ -9,6 +9,12 @@ The intent is to use with ruby applications, as well as centralize authorization
 
     gem "super_auth"
 
+
+## Docs
+
+How `super_auth` stacks up against other authentication strategies:
+[Do you really understand Authentication](https://dev.to/jonathanfrias/do-you-really-understand-authorization-1o5d)
+
 ## Usage
 
 SuperAuth is a rules engine engine that works on 5 different authorization concepts:
