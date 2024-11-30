@@ -1,8 +1,9 @@
-# SuperAuth
+f# SuperAuth
 
 Super auth is turn-key authorization gem that makes unauthorized access unrepresentable. **Stop writing tests for authorization with confidence**
 
-The intent is to use with ruby applications, as well as centralize authorization for multiple applications.
+The intent is to use with ruby applications, as well as centralize authorization for multiple applications. If you look at the [OWASP top vulnerabilty](https://owasp.org/Top10/A01_2021-Broken_Access_Control/), broken
+access control is the NUMBER 1 most common security risk in modern applications today. super_auth provides a authentication strategy that allows you to completely de-risk your application, solving this issue once confidently.
 
 
 ## Installation
