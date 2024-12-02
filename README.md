@@ -1,4 +1,4 @@
-f# SuperAuth
+# SuperAuth
 
 Super auth is turn-key authorization gem that makes unauthorized access unrepresentable. **Stop writing tests for authorization with confidence**
 
