@@ -3,6 +3,7 @@
 # File generated automatically, do not edit
 # See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
 
+require 'super_auth/authorization'
 require 'super_auth/edge'
 require 'super_auth/nestable'
 require 'super_auth/group'

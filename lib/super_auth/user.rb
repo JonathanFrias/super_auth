@@ -1,5 +1,6 @@
 class SuperAuth::User < Sequel::Model(:super_auth_users)
   one_to_many :edges
+  one_to_many :resources
 
   dataset_module do
     def with_edges
@@ -40,10 +41,6 @@ class SuperAuth::User < Sequel::Model(:super_auth_users)
         Sequel[:roles][:role_name_path],
         Sequel[:roles][:parent_id]
       )
-    end
-
-    def with_roles_with_groups
-      with_groups_with_roles
     end
   end
 end

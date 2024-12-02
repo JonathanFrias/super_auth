@@ -9,6 +9,7 @@ RSpec.describe SuperAuth do
   Permission = SuperAuth::Permission
   Role = SuperAuth::Role
   Resource = SuperAuth::Resource
+  Authorization = SuperAuth::Authorization
 
   let(:db) { Sequel::Model.db }
 
@@ -166,7 +167,7 @@ RSpec.describe SuperAuth do
     expect(edges.count).to eq 1
   end
 
-  it "users<->permissions<->resource" do
+  it "users<->permissions<->resources" do
     user = User.create(name: "user")
     permission = Permission.create(name: "read")
     resource = Resource.create(name: "resource")
@@ -175,5 +176,12 @@ RSpec.describe SuperAuth do
     Edge.create(permission: permission, resource: resource)
 
     expect(Edge.users_permissions_resources.count).to eq 1
+  end
+
+  it "users<->resources" do
+    user = User.create(name: "user")
+    resource = Resource.create(name: "resource")
+    Edge.create(user: user, resource: resource)
+    expect(Edge.users_resources.count).to eq 1
   end
 end

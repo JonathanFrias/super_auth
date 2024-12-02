@@ -28,6 +28,7 @@ Sequel::Model.default_association_options = {:class_namespace=>'SuperAuth'}
 # I don't love this, but I don't know how to do it better
 unless Sequel::Model.db.table_exists?(:super_auth_edges)
   Sequel.extension :migration
+  require "pathname"
   path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
   Sequel::Migrator.run(Sequel::Model.db, path)
 end

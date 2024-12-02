@@ -5,6 +5,21 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
   many_to_one :role
   many_to_one :resource
 
+
+  def before_save
+    @affected_users = SuperAuth::Authorization.where(user_id: user_id).distinct.select_map(:user_id) + [user_id]
+  end
+
+  def after_save
+    SuperAuth::Authorization.db.transaction do
+      SuperAuth::Authorization.where(user_id: @affected_users).select(:user_id).delete
+      SuperAuth::Authorization.multi_insert(
+        SuperAuth::Edge.authorizations.where(user_id: @affected_users)
+        .to_a
+      )
+    end
+  end
+
   class << self
 
     def authorizations
@@ -12,6 +27,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         .union(users_roles_permissions_resources)
         .union(users_groups_permissions_resources)
         .union(users_permissions_resources)
+        .union(users_resources)
     end
 
     def users_groups_roles_permissions_resources
@@ -60,16 +76,16 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:users_groups_roles_permissions_resources][:group_path],
           Sequel[:users_groups_roles_permissions_resources][:group_name_path],
           Sequel[:users_groups_roles_permissions_resources][:group_parent_id],
-          Sequel[:users_groups_roles_permissions_resources][:group_created_at].cast(:text),
-          Sequel[:users_groups_roles_permissions_resources][:group_updated_at].cast(:text),
+          Sequel[:users_groups_roles_permissions_resources][:group_created_at].cast(:text).as(:group_created_at),
+          Sequel[:users_groups_roles_permissions_resources][:group_updated_at].cast(:text).as(:group_updated_at),
 
           Sequel[:users_groups_roles_permissions_resources][:role_id],
           Sequel[:users_groups_roles_permissions_resources][:role_name],
           Sequel[:users_groups_roles_permissions_resources][:role_path],
           Sequel[:users_groups_roles_permissions_resources][:role_name_path],
           Sequel[:users_groups_roles_permissions_resources][:role_parent_id],
-          Sequel[:users_groups_roles_permissions_resources][:role_created_at].cast(:text),
-          Sequel[:users_groups_roles_permissions_resources][:role_updated_at].cast(:text),
+          Sequel[:users_groups_roles_permissions_resources][:role_created_at].cast(:text).as(:role_created_at),
+          Sequel[:users_groups_roles_permissions_resources][:role_updated_at].cast(:text).as(:role_updated_at),
 
           Sequel[:super_auth_permissions][:id].as(:permission_id),
           Sequel[:super_auth_permissions][:name].as(:permission_name),
@@ -103,7 +119,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:groups][:group_path],
           Sequel[:groups][:group_name_path],
           Sequel[:groups][:parent_id].as(:group_parent_id),
-          Sequel[:groups][:created_at].cast(:text).as(:group_created_at),
+          Sequel[:groups][:created_at].as(:group_created_at),
           Sequel[:groups][:updated_at].cast(:text).as(:group_updated_at),
 
           Sequel.lit(%[0 as "role_id"]),          # Sequel[:roles][:id].as(:role_id),
@@ -215,5 +231,46 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
       join(Sequel[:super_auth_resources], id: Sequel[:resource_edges][:resource_id]).
       distinct
     end
+
+    def users_resources
+      SuperAuth::User.
+        join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
+        select(
+          Sequel[:super_auth_users][:id].as(:user_id),
+          Sequel[:super_auth_users][:name].as(:user_name),
+          Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
+          Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
+
+          Sequel.lit(%Q[0 as "group_id"]),      # Sequel[:groups][:group_id],
+          Sequel::NULL.as(:group_name),       # Sequel[:groups][:group_name],
+          Sequel::NULL.as(:group_path),       # Sequel[:groups][:group_path],
+          Sequel::NULL.as(:group_name_path),  # Sequel[:groups][:group_name_path],
+          Sequel.lit(%Q[0 as "group_parent_id"]),      # Sequel[:groups][:group_id],
+          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_created_at"]), # Sequel[:groups][:group_created_at],
+          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_updated_at"]), # Sequel[:groups][:group_updated_at],
+
+
+          Sequel.lit(%Q[0 as "role_id"]),        # Sequel[:roles][:role_id],
+          Sequel::NULL.as(:role_name),           # Sequel[:roles][:role_name],
+          Sequel::NULL.as(:role_path),           # Sequel[:roles][:role_path],
+          Sequel::NULL.as(:role_name_path),      # Sequel[:roles][:role_name_path],
+          Sequel.lit(%Q[0 as "role_parent_id"]), # Sequel[:roles][:role_parent_id],
+          Sequel::NULL.as(:role_created_at),     # Sequel[:roles][:role_created_at],
+          Sequel::NULL.as(:role_updated_at),     # Sequel[:roles][:role_updated_at],
+
+          Sequel.lit(%Q[0 as "permission_id"]),
+          Sequel::NULL.as(:permission_name),
+          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "permission_created_at"]),
+          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "permission_updated_at"]),
+
+          Sequel[:super_auth_resources][:id].as(:resource_id),
+          Sequel[:super_auth_resources][:name].as(:resource_name),
+          Sequel[:super_auth_resources][:external_id].as(:resource_external_id)
+        ).
+      join(Sequel[:super_auth_resources], Sequel[:user_edges][:resource_id] => Sequel[:super_auth_resources][:id]).
+      distinct
+    end
   end
 end
+
