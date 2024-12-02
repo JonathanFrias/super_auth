@@ -1,6 +1,6 @@
 Sequel.migration do
   change do
-    create_table(:super_auth_edges) do
+    create_table?(:super_auth_edges) do
       primary_key :id
 
       foreign_key :user_id,       :super_auth_users,       null: true

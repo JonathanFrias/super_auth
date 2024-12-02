@@ -1,6 +1,6 @@
 Sequel.migration do
   change do
-    create_table(:super_auth_users) do
+    create_table?(:super_auth_users) do
       primary_key :id
 
       String :external_id # , null: false

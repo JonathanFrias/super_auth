@@ -1,6 +1,6 @@
 Sequel.migration do
   change do
-    create_table(:super_auth_resources) do
+    create_table?(:super_auth_resources) do
       primary_key :id
 
       String :name
