@@ -13,12 +13,9 @@ end
 require 'sequel'
 
 ENV["SUPER_AUTH_LOG_LEVEL"] = 'debug'
-logger = if ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
-  require 'logger'
-  Logger.new(STDOUT)
-end
+require 'logger'
+logger = Logger.new(STDOUT)
 
-require 'sequel'
 Sequel::Model.plugin :timestamps, update_on_create: true
 if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
   Sequel::Model.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)

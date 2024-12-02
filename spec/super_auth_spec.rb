@@ -26,10 +26,21 @@ RSpec.describe SuperAuth do
       admin_group = Group.create(name: 'admin', parent: root_group)
         user_group = Group.create(name: 'user', parent: admin_group)
 
-    descendants = root_group.descendants.sort_by(&:id)
-    expect(descendants).to match_array([root_group, user_group, admin_group])
+    descendants = root_group.descendants_dataset.order(:id)
+    expect(descendants).to match_array([root_group, admin_group, user_group])
 
     expect(descendants.map { |d| d[:group_path] }).to eq ["#{root_group.id}", "#{root_group.id},#{admin_group.id}", "#{root_group.id},#{admin_group.id},#{user_group.id}"]
+  end
+
+  it "can create a role tree" do
+    root_role = Role.create(name: 'root')
+      admin_role = Role.create(name: 'admin', parent: root_role)
+        user_role = Role.create(name: 'user', parent: admin_role)
+
+    descendants = root_role.descendants_dataset.order(:id)
+    expect(descendants).to match_array([root_role, admin_role, user_role])
+
+    expect(descendants.map { |d| d[:role_path] }).to eq ["#{root_role.id}", "#{root_role.id},#{admin_role.id}", "#{root_role.id},#{admin_role.id},#{user_role.id}"]
   end
 
   let(:users_and_groups) do
