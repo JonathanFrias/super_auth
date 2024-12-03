@@ -47,8 +47,8 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         Sequel[:groups][:group_path],
         Sequel[:groups][:group_name_path],
         Sequel[:groups][:parent_id],
-        Sequel[:groups][:created_at].as(:group_created_at),
-        Sequel[:groups][:updated_at].as(:group_updated_at),
+        Sequel[:groups][:created_at].cast(:text).as(:group_created_at),
+        Sequel[:groups][:updated_at].cast(:text).as(:group_updated_at),
       ).join(Sequel[:super_auth_edges].as(:group_role_edges), Sequel[:group_role_edges][:group_id] => Sequel[:groups][:id]).select_append(
         Sequel[:group_role_edges][:id].as(:group_role_edge_id),
         Sequel[:group_role_edges][:permission_id].as(:group_role_edge_permission_id),
@@ -59,7 +59,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
       SuperAuth::Edge.from(
         SuperAuth::Edge.from(
-          SuperAuth::Group.cte(SuperAuth::Group.where(id: users_groups_roles_ds.select(Sequel[:groups][:id])).select(:id)).select { [id.as(:group_id), name.as(:group_name), parent_id.as(:group_parent_id), group_path, group_name_path, created_at.as(:group_created_at), updated_at.as(:group_updated_at)] },
+          SuperAuth::Group.cte(SuperAuth::Group.where(id: users_groups_roles_ds.select(Sequel[:groups][:id])).select(:id)).select { [id.as(:group_id), name.as(:group_name), parent_id.as(:group_parent_id), group_path, group_name_path, created_at.cast(:text).as(:group_created_at), updated_at.as(:group_updated_at)] },
           SuperAuth::Role.cte(users_groups_roles_ds.select(Sequel[:group_role_edges][:role_id])).select { [id.as(:role_id), name.as(:role_name), parent_id.as(:role_parent_id), role_path, role_name_path, created_at.as(:role_created_at), updated_at.as(:role_updated_at) ] }
         ).as(:users_groups_roles_permissions_resources)
       ).join(Sequel[:super_auth_edges].as(:user_edges), Sequel[:user_edges][:group_id] => Sequel[:users_groups_roles_permissions_resources][:group_id])
@@ -119,7 +119,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:groups][:group_path],
           Sequel[:groups][:group_name_path],
           Sequel[:groups][:parent_id].as(:group_parent_id),
-          Sequel[:groups][:created_at].as(:group_created_at),
+          Sequel[:groups][:created_at].cast(:text).as(:group_created_at),
           Sequel[:groups][:updated_at].cast(:text).as(:group_updated_at),
 
           Sequel.lit(%[0 as "role_id"]),          # Sequel[:roles][:id].as(:role_id),
@@ -207,7 +207,6 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_created_at"]), # Sequel[:groups][:group_created_at],
           Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_updated_at"]), # Sequel[:groups][:group_updated_at],
 
-
           Sequel.lit(%Q[0 as "role_id"]),        # Sequel[:roles][:role_id],
           Sequel::NULL.as(:role_name),           # Sequel[:roles][:role_name],
           Sequel::NULL.as(:role_path),           # Sequel[:roles][:role_path],
@@ -273,4 +272,3 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
     end
   end
 end
-
