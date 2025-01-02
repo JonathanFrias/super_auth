@@ -1,0 +1,2 @@
+module SuperAuth::ActiveRecord
+end

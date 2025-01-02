@@ -17,7 +17,7 @@ module SuperAuth
     yield self if block_given?
   end
 
-  def self.default_db
+  def self.set_db
     logger =
       if defined?(Rails) && ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
         Rails.logger
@@ -39,10 +39,26 @@ module SuperAuth
   end
 
   def self.install_migrations
+    require "sequel"
+    set_db
     Sequel.extension :migration
     require "pathname"
     path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
     Sequel::Migrator.run(Sequel::Model.db, path)
+  end
+
+  def self.uninstall_migrations
+    require "sequel"
+    set_db
+    Sequel.extension :migration
+    require "pathname"
+
+    path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
+    db = Sequel::Model.db
+
+    Sequel::Migrator.run(db, path, target: 0)
+  rescue => e
+    raise Error, "Failed to uninstall migrations: #{e.message}"
   end
 end
 
