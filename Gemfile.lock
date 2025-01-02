@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    super_auth (0.1.4)
+    super_auth (0.1.5)
       sequel
 
 GEM

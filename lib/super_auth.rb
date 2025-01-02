@@ -10,33 +10,40 @@ if defined? SuperAuth::AUTOLOADERS
   end
 end
 
-require 'sequel'
-
-ENV["SUPER_AUTH_LOG_LEVEL"] = 'debug'
-require 'logger'
-logger = Logger.new(STDOUT)
-
-Sequel::Model.plugin :timestamps, update_on_create: true
-if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
-  Sequel::Model.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
-else
-  logger.warn "SUPER_AUTH_DATABASE_URL not set, using sqlite in memory database."
-  Sequel::Model.db = Sequel.sqlite(logger: logger)
-end
-Sequel::Model.default_association_options = {:class_namespace=>'SuperAuth'}
-
-# I don't love this, but I don't know how to do it better
-unless Sequel::Model.db.table_exists?(:super_auth_edges)
-  Sequel.extension :migration
-  require "pathname"
-  path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
-  Sequel::Migrator.run(Sequel::Model.db, path)
-end
-require 'basic_loader' unless defined?(SuperAuth::AUTOLOADERS)
-
-
 module SuperAuth
   class Error < StandardError; end
+
+  def self.setup
+    yield self if block_given?
+  end
+
+  def self.default_db
+    logger =
+      if defined?(Rails) && ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
+        Rails.logger
+      elsif ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
+        require "logger"
+        logger = Logger.new(STDOUT)
+      else
+        nil
+      end
+
+    if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+      Sequel::Model.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
+    else
+      puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite in memory database."
+      Sequel::Model.db = Sequel.sqlite(logger: logger)
+      install_migrations
+    end
+    Sequel::Model.default_association_options = {:class_namespace=>'SuperAuth'}
+  end
+
+  def self.install_migrations
+    Sequel.extension :migration
+    require "pathname"
+    path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
+    Sequel::Migrator.run(Sequel::Model.db, path)
+  end
 end
 
 require "super_auth/railtie" if defined?(Rails::Railtie)
