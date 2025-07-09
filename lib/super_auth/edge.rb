@@ -5,14 +5,13 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
   many_to_one :role
   many_to_one :resource
 
-
   def before_save
     @affected_users = SuperAuth::Authorization.where(user_id: user_id).distinct.select_map(:user_id) + [user_id]
   end
 
   def after_save
     SuperAuth::Authorization.db.transaction do
-      SuperAuth::Authorization.where(user_id: @affected_users).select(:user_id).delete
+      SuperAuth::Authorization.where(user_id: @affected_users).delete
       SuperAuth::Authorization.multi_insert(
         SuperAuth::Edge.authorizations.where(user_id: @affected_users)
         .to_a
