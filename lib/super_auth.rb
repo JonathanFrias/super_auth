@@ -8,6 +8,9 @@ if defined? SuperAuth::AUTOLOADERS
     loader.ignore("#{__dir__}/basic_loader.rb")
     loader.setup
   end
+  require "sequel"
+else
+  require 'basic_loader'
 end
 
 module SuperAuth
@@ -29,10 +32,10 @@ module SuperAuth
       end
 
     if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
-      Sequel::Model.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
+      SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
     else
-      puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite in memory database."
-      Sequel::Model.db = Sequel.sqlite(logger: logger)
+      puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
+      SuperAuth.db = Sequel.sqlite(logger: logger, database: "./tmp/test.db")
       install_migrations
     end
     Sequel::Model.default_association_options = {:class_namespace=>'SuperAuth'}
@@ -40,11 +43,10 @@ module SuperAuth
 
   def self.install_migrations
     require "sequel"
-    set_db
     Sequel.extension :migration
     require "pathname"
     path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
-    Sequel::Migrator.run(Sequel::Model.db, path)
+    Sequel::Migrator.run(SuperAuth.db, path)
   end
 
   def self.uninstall_migrations
@@ -54,11 +56,27 @@ module SuperAuth
     require "pathname"
 
     path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
-    db = Sequel::Model.db
+    db = SuperAuth.db
 
     Sequel::Migrator.run(db, path, target: 0)
   rescue => e
     raise Error, "Failed to uninstall migrations: #{e.message}"
+  end
+
+  def self.current_user=(user)
+    @current_user = user
+  end
+
+  def self.current_user
+    @current_user
+  end
+
+  def self.db=(db)
+    @db = db
+  end
+
+  def self.db
+    @db
   end
 end
 

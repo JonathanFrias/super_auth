@@ -1,15 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe SuperAuth do
-  Group = SuperAuth::Group
-  User = SuperAuth::User
-  Edge = SuperAuth::Edge
-  Permission = SuperAuth::Permission
-  Role = SuperAuth::Role
-  Resource = SuperAuth::Resource
-  Authorization = SuperAuth::Authorization
-
-  let(:db) { Sequel::Model.db }
+  let(:db) { SuperAuth.db }
 
   before do
     db[:super_auth_edges].delete
@@ -21,9 +13,9 @@ RSpec.describe SuperAuth do
   end
 
   it "can create a group tree" do
-    root_group = Group.create(name: 'root')
-      admin_group = Group.create(name: 'admin', parent: root_group)
-        user_group = Group.create(name: 'user', parent: admin_group)
+    root_group = SuperAuth::Group.create(name: 'root')
+      admin_group = SuperAuth::Group.create(name: 'admin', parent: root_group)
+        user_group = SuperAuth::Group.create(name: 'user', parent: admin_group)
 
     descendants = root_group.descendants_dataset.order(:id)
     expect(descendants).to match_array([root_group, admin_group, user_group])
@@ -32,9 +24,9 @@ RSpec.describe SuperAuth do
   end
 
   it "can create a role tree" do
-    root_role = Role.create(name: 'root')
-      admin_role = Role.create(name: 'admin', parent: root_role)
-        user_role = Role.create(name: 'user', parent: admin_role)
+    root_role = SuperAuth::Role.create(name: 'root')
+      admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
+        user_role = SuperAuth::Role.create(name: 'user', parent: admin_role)
 
     descendants = root_role.descendants_dataset.order(:id)
     expect(descendants).to match_array([root_role, admin_role, user_role])
@@ -43,27 +35,29 @@ RSpec.describe SuperAuth do
   end
 
   let(:users_and_groups) do
-    @ceo = User.create(name: 'CEO')
-    @senior_developer = User.create(name: 'Señor Dev')
-    @noob_developer = User.create(name: 'gotta get good')
-    @marketing_bro = User.create(name: "Buy this pen!")
+    @ceo = SuperAuth::User.create(name: 'CEO')
+    @senior_developer = SuperAuth::User.create(name: 'Señor Dev')
+    @noob_developer = SuperAuth::User.create(name: 'gotta get good')
+    @marketing_bro = SuperAuth::User.create(name: "Buy this pen!")
 
-    @organization = Group.create(name: 'Foobar Corp')
-      @marketing = Group.create(name: 'marketing', parent: @organization)
+    @organization = SuperAuth::Group.create(name: 'Foobar Corp')
+      @marketing = SuperAuth::Group.create(name: 'marketing', parent: @organization)
 
-      @developers = Group.create(name: 'developers', parent: @organization)
-        @feature1 = Group.create(name: 'feature1', parent: @developers)
-        _feature = Group.create(name: 'feature2', parent: @developers)
+      @developers = SuperAuth::Group.create(name: 'developers', parent: @organization)
+        @feature1 = SuperAuth::Group.create(name: 'feature1', parent: @developers)
+        _feature = SuperAuth::Group.create(name: 'feature2', parent: @developers)
 
-    Edge.create(user: @ceo, group: @organization)
-    Edge.create(user: @senior_developer, group: @developers)
-    Edge.create(user: @marketing_bro, group: @marketing)
-    Edge.create(user: @noob_developer, group: @feature1)
+    SuperAuth::Edge.create(user: @ceo, group: @organization)
+    SuperAuth::Edge.create(user: @senior_developer, group: @developers)
+    SuperAuth::Edge.create(user: @marketing_bro, group: @marketing)
+    SuperAuth::Edge.create(user: @noob_developer, group: @feature1)
   end
 
   it "can merge users with groups" do
+    expect(db[:super_auth_users].count).to eq 0
+    expect(SuperAuth::User.count).to eq 0
     users_and_groups
-    ceo_res, senior_developer_res, noob_developer_res, marketing_bro_res = User.with_groups.all.sort_by(&:id)
+    ceo_res, senior_developer_res, noob_developer_res, marketing_bro_res = SuperAuth::User.with_groups.all.sort_by(&:id)
     [
       # result               user_id,               group_id,         group_name     parent_id,        group_path,                                              group_name_path
       [ceo_res,              @ceo.id,               @organization.id, 'Foobar Corp', nil,              "#{@organization.id}",                                   "Foobar Corp"],
@@ -81,28 +75,28 @@ RSpec.describe SuperAuth do
   end
 
   let(:permissions_and_roles) do
-    @read_access = Permission.create(name: 'read')
-    @write_access = Permission.create(name: 'write')
-    @reboot_access = Permission.create(name: 'reboot')
-    @invoice = Permission.create(name: 'invoice')
+    @read_access = SuperAuth::Permission.create(name: 'read')
+    @write_access = SuperAuth::Permission.create(name: 'write')
+    @reboot_access = SuperAuth::Permission.create(name: 'reboot')
+    @invoice = SuperAuth::Permission.create(name: 'invoice')
 
-    @employee  = Role.create(name: 'employee')
-      @accounting = Role.create(name: 'accounting', parent: @employee)
+    @employee  = SuperAuth::Role.create(name: 'employee')
+      @accounting = SuperAuth::Role.create(name: 'accounting', parent: @employee)
 
-      @prod_access = Role.create(name: 'production support', parent: @employee)
-        @web = Role.create(name: 'web', parent: @prod_access)
-        @db1 = Role.create(name: 'db1', parent: @prod_access)
-        @db2 = Role.create(name: 'db2', parent: @prod_access)
+      @prod_access = SuperAuth::Role.create(name: 'production support', parent: @employee)
+        @web = SuperAuth::Role.create(name: 'web', parent: @prod_access)
+        @db1 = SuperAuth::Role.create(name: 'db1', parent: @prod_access)
+        @db2 = SuperAuth::Role.create(name: 'db2', parent: @prod_access)
 
-    Edge.create(role: @prod_access, permission: @read_access)
-    Edge.create(role: @prod_access, permission: @write_access)
-    Edge.create(role: @prod_access, permission: @reboot_access)
-    Edge.create(role: @accounting, permission: @invoice)
+    SuperAuth::Edge.create(role: @prod_access, permission: @read_access)
+    SuperAuth::Edge.create(role: @prod_access, permission: @write_access)
+    SuperAuth::Edge.create(role: @prod_access, permission: @reboot_access)
+    SuperAuth::Edge.create(role: @accounting, permission: @invoice)
   end
 
   it "can merge permissions with roles" do
     permissions_and_roles
-    read_res, write_res, reboot_res, invoice_res = Permission.with_roles.all.sort_by(&:id)
+    read_res, write_res, reboot_res, invoice_res = SuperAuth::Permission.with_roles.all.sort_by(&:id)
     [
       # result      permission_id,     role_id,        role_name              parent_id,       role_path,                            role_name_path
       [read_res,    @read_access.id,   @prod_access.id, 'production support', @employee.id,    "#{@employee.id},#{@prod_access.id}", "employee,production support"],
@@ -123,12 +117,12 @@ RSpec.describe SuperAuth do
     permissions_and_roles
     users_and_groups
 
-    resource = Resource.create(name: 'resource')
+    resource = SuperAuth::Resource.create(name: 'resource')
 
-    Edge.create(role: @employee, group: @organization)
-    Edge.create(permission: @read_access, resource: resource)
+    SuperAuth::Edge.create(role: @employee, group: @organization)
+    SuperAuth::Edge.create(permission: @read_access, resource: resource)
 
-    edges = Edge.users_groups_roles_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_groups_roles_permissions_resources.sort_by { |v| v[:group_path] }
     expect(edges.map { |e| e[:user_name] }).to eq ['CEO', 'Buy this pen!', 'Señor Dev', 'gotta get good']
     expect(edges.map { |e| e[:group_name] }).to eq ['Foobar Corp', 'marketing', 'developers', 'feature1']
     expect(edges.map { |e| e[:role_name] }).to eq ['production support', 'production support', 'production support', 'production support']
@@ -140,12 +134,12 @@ RSpec.describe SuperAuth do
     permissions_and_roles
     users_and_groups
 
-    resource = Resource.create(name: 'resource')
+    resource = SuperAuth::Resource.create(name: 'resource')
 
-    Edge.create(permission: @reboot_access, group: @marketing)
-    Edge.create(resource: resource, permission: @reboot_access)
+    SuperAuth::Edge.create(permission: @reboot_access, group: @marketing)
+    SuperAuth::Edge.create(resource: resource, permission: @reboot_access)
 
-    edges = Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
 
     expect(edges.count).to eq 1
   end
@@ -154,32 +148,31 @@ RSpec.describe SuperAuth do
     permissions_and_roles
     users_and_groups
 
-    resource = Resource.create(name: 'resource')
+    resource = SuperAuth::Resource.create(name: 'resource')
 
-    Edge.create(user: @ceo, role: @prod_access)
-    Edge.create(role: @prod_access, permission: @reboot_access)
-    Edge.create(permission: @reboot_access, resource: resource)
+    SuperAuth::Edge.create(user: @ceo, role: @prod_access)
+    SuperAuth::Edge.create(role: @prod_access, permission: @reboot_access)
+    SuperAuth::Edge.create(permission: @reboot_access, resource: resource)
 
-    edges = Edge.users_roles_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_roles_permissions_resources.sort_by { |v| v[:group_path] }
 
     expect(edges.count).to eq 1
   end
 
-  it "users<->permissions<->resources" do
-    user = User.create(name: "user")
-    permission = Permission.create(name: "read")
-    resource = Resource.create(name: "resource")
+  it "users<->permissions<->resources" do user = SuperAuth::User.create(name: "user")
+    permission = SuperAuth::Permission.create(name: "read")
+    resource = SuperAuth::Resource.create(name: "resource")
 
-    Edge.create(user: user, permission: permission)
-    Edge.create(permission: permission, resource: resource)
+    SuperAuth::Edge.create(user: user, permission: permission)
+    SuperAuth::Edge.create(permission: permission, resource: resource)
 
-    expect(Edge.users_permissions_resources.count).to eq 1
+    expect(SuperAuth::Edge.users_permissions_resources.count).to eq 1
   end
 
   it "users<->resources" do
-    user = User.create(name: "user")
-    resource = Resource.create(name: "resource")
-    Edge.create(user: user, resource: resource)
-    expect(Edge.users_resources.count).to eq 1
+    user = SuperAuth::User.create(name: "user")
+    resource = SuperAuth::Resource.create(name: "resource")
+    SuperAuth::Edge.create(user: user, resource: resource)
+    expect(SuperAuth::Edge.users_resources.count).to eq 1
   end
 end

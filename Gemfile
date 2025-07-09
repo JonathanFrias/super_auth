@@ -12,10 +12,11 @@ gemspec
 gem "rake", "~> 13.0"
 gem "rspec", "~> 3.0"
 gem "zeitwerk", "~> 2.6"
+gem "sequel"
 
-
-group :development do
+group :development, :test do
   gem "pry"
   gem "pg"
   gem "sqlite3"
+  gem "activerecord"
 end

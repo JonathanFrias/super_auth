@@ -7,7 +7,7 @@ class SuperAuth::Permission < Sequel::Model(:super_auth_permissions)
     end
 
     def with_roles
-    with_edges.join(Role.from(Role.trees).as(:roles), id: :role_id).select(
+    with_edges.join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:roles), id: :role_id).select(
         Sequel[:super_auth_permissions][:id].as(:id),
         Sequel[:super_auth_permissions][:id].as(:permission_id),
         Sequel[:roles][:id].as(:role_id),

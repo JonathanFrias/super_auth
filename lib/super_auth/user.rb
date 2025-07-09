@@ -8,7 +8,7 @@ class SuperAuth::User < Sequel::Model(:super_auth_users)
     end
 
     def with_groups
-      with_edges.join(Group.from(Group.trees).as(:groups), id: :group_id).select(
+      with_edges.join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), id: :group_id).select(
         Sequel[:super_auth_users][:id].as(:id),
         Sequel[:super_auth_users][:id].as(:user_id),
         Sequel[:groups][:id].as(:group_id),
@@ -26,7 +26,7 @@ class SuperAuth::User < Sequel::Model(:super_auth_users)
     end
 
     def with_roles
-      with_edges.join(Role.from(Role.trees).as(:roles), id: :role_id).select(
+      with_edges.join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:roles), id: :role_id).select(
         Sequel[:users][:id].as(:id),
         Sequel[:users][:id].as(:user_id),
         Sequel[:roles][:id].as(:role_id),
