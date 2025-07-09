@@ -2,6 +2,9 @@ class SuperAuth::User < Sequel::Model(:super_auth_users)
   one_to_many :edges
   one_to_many :resources
 
+  def system? = self.class.system == self
+  def self.system = find_or_create(name: "system")
+
   dataset_module do
     def with_edges
       join(:super_auth_edges, user_id: :id).select_all(:super_auth_users)
