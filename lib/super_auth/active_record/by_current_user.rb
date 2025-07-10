@@ -16,8 +16,6 @@ module SuperAuth::ActiveRecord::ByCurrentUser
     end
   end
 
-  def system? = false
-
   module ClassMethods
   end
 
