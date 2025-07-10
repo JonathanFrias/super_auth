@@ -4,6 +4,7 @@ Sequel.migration do
       Integer :user_id, null: true
       String :user_name, null: true
       String :user_external_id, null: true
+      String :user_external_type, null: true
       DateTime :user_created_at, null: true
       DateTime :user_updated_at, null: true
       Integer :group_id, null: true
@@ -28,6 +29,7 @@ Sequel.migration do
       Integer :resource_id, null: true
       String :resource_name, null: true
       String :resource_external_id, null: true
+      String :resource_external_type, null: true
       DateTime :created_at, null: false, default: Sequel::CURRENT_TIMESTAMP
       DateTime :updated_at, null: false, default: Sequel::CURRENT_TIMESTAMP
     end

@@ -24,13 +24,13 @@ module SuperAuth
           require 'super_auth/active_record/resource'
           require 'super_auth/active_record/role'
           require 'super_auth/active_record/user'
-          SuperAuth::Authorization = SuperAuth::ActiveRecord::Authorization
-          SuperAuth::Edge = SuperAuth::ActiveRecord::Edge
-          SuperAuth::Group = SuperAuth::ActiveRecord::Group
-          SuperAuth::Permission = SuperAuth::ActiveRecord::Permission
-          SuperAuth::Resource = SuperAuth::ActiveRecord::Resource
-          SuperAuth::User = SuperAuth::ActiveRecord::User
-          SuperAuth::Role = SuperAuth::ActiveRecord::Role
+          # SuperAuth::Authorization = SuperAuth::ActiveRecord::Authorization
+          # SuperAuth::Edge = SuperAuth::ActiveRecord::Edge
+          # SuperAuth::Group = SuperAuth::ActiveRecord::Group
+          # SuperAuth::Permission = SuperAuth::ActiveRecord::Permission
+          # SuperAuth::Resource = SuperAuth::ActiveRecord::Resource
+          # SuperAuth::User = SuperAuth::ActiveRecord::User
+          # SuperAuth::Role = SuperAuth::ActiveRecord::Role
         end
       end
     end

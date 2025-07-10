@@ -9,6 +9,7 @@ RSpec.describe SuperAuth do
     # ENV["SUPER_AUTH_LOG_LEVEL"] = "debug"
     SuperAuth.set_db
     SuperAuth.install_migrations
+    SuperAuth::ActiveRecord::Authorization.itself
     ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: './tmp/test.db')
     example.run
     ENV['SUPER_AUTH_DATABASE_URL'] = orig
