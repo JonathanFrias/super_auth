@@ -1,5 +1,3 @@
-# frozen_string_literal: true
-
 require "super_auth"
 require "sequel"
 SuperAuth.set_db
