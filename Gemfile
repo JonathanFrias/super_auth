@@ -17,4 +17,6 @@ group :development, :test do
   gem "pg"
   gem "sqlite3"
   gem "activerecord"
+  gem "sequel-activerecord_connection"
+  gem "after_commit_everywhere"
 end

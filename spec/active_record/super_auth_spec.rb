@@ -4,24 +4,18 @@ RSpec.describe SuperAuth do
   let(:db) { SuperAuth.db }
 
   around do |example|
-    # TODO: Fix this. This sort of test setup works, but it should be consolidated betterer.
-    ENV['SUPER_AUTH_DATABASE_URL'], orig = 'sqlite://./tmp/test.db', ENV['SUPER_AUTH_DATABASE_URL']
-    # ENV["SUPER_AUTH_LOG_LEVEL"] = "debug"
-    SuperAuth.set_db
     SuperAuth.install_migrations
-    SuperAuth::ActiveRecord::Authorization.itself
-    ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: './tmp/test.db')
-    example.run
-    ENV['SUPER_AUTH_DATABASE_URL'] = orig
-  end
-
-  before do
     db[:super_auth_edges].delete
     db[:super_auth_groups].delete
     db[:super_auth_users].delete
     db[:super_auth_permissions].delete
     db[:super_auth_roles].delete
     db[:super_auth_resources].delete
+    example.run
+    SuperAuth.uninstall_migrations
+  end
+
+  before do
   end
 
   it "can create a group tree" do

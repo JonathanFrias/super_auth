@@ -4,12 +4,17 @@ RSpec.describe SuperAuth do
   let(:db) { SuperAuth.db }
 
   before do
+    SuperAuth.install_migrations
     db[:super_auth_edges].delete
     db[:super_auth_groups].delete
     db[:super_auth_users].delete
     db[:super_auth_permissions].delete
     db[:super_auth_roles].delete
     db[:super_auth_resources].delete
+  end
+
+  after do
+    SuperAuth.uninstall_migrations
   end
 
   it "can create a group tree" do
@@ -159,7 +164,8 @@ RSpec.describe SuperAuth do
     expect(edges.count).to eq 1
   end
 
-  it "users<->permissions<->resources" do user = SuperAuth::User.create(name: "user")
+  it "users<->permissions<->resources" do
+    user = SuperAuth::User.create(name: "user")
     permission = SuperAuth::Permission.create(name: "read")
     resource = SuperAuth::Resource.create(name: "resource")
 

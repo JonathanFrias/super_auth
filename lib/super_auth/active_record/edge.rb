@@ -6,11 +6,11 @@ class SuperAuth::ActiveRecord::Edge < ActiveRecord::Base
   belongs_to :role, class_name: 'SuperAuth::ActiveRecord::Role'
   belongs_to :resource, class_name: 'SuperAuth::ActiveRecord::Resource'
 
-  def before_save
-    @affected_users = SuperAuth::Authorization.where(user_id: user_id).distinct.select_map(:user_id) + [user_id]
+  before_save do
+    @affected_users = SuperAuth::Authorization.where(user_id: user_id).distinct.select(:user_id).pluck(:user_id) + [user_id]
   end
 
-  def after_save
+  after_save do
     SuperAuth::Authorization.db.transaction do
       SuperAuth::Authorization.where(user_id: @affected_users).delete
       SuperAuth::Authorization.multi_insert(

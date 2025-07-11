@@ -7,13 +7,13 @@ PATH
 GEM
   remote: https://rubygems.org/
   specs:
-    activemodel (8.0.2)
-      activesupport (= 8.0.2)
-    activerecord (8.0.2)
-      activemodel (= 8.0.2)
-      activesupport (= 8.0.2)
+    activemodel (7.2.2.1)
+      activesupport (= 7.2.2.1)
+    activerecord (7.2.2.1)
+      activemodel (= 7.2.2.1)
+      activesupport (= 7.2.2.1)
       timeout (>= 0.4.0)
-    activesupport (8.0.2)
+    activesupport (7.2.2.1)
       base64
       benchmark (>= 0.3)
       bigdecimal
@@ -25,7 +25,9 @@ GEM
       minitest (>= 5.1)
       securerandom (>= 0.3)
       tzinfo (~> 2.0, >= 2.0.5)
-      uri (>= 0.13.1)
+    after_commit_everywhere (1.6.0)
+      activerecord (>= 4.2)
+      activesupport
     base64 (0.3.0)
     benchmark (0.4.1)
     bigdecimal (3.2.2)
@@ -60,12 +62,14 @@ GEM
     securerandom (0.4.1)
     sequel (5.94.0)
       bigdecimal
+    sequel-activerecord_connection (2.0.0)
+      activerecord (>= 5.0, < 8.1)
+      sequel (~> 5.38)
     sqlite3 (2.7.2-arm64-darwin)
     sqlite3 (2.7.2-x86_64-linux-gnu)
     timeout (0.4.3)
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
-    uri (1.0.3)
     zeitwerk (2.6.12)
 
 PLATFORMS
@@ -76,11 +80,13 @@ PLATFORMS
 
 DEPENDENCIES
   activerecord
+  after_commit_everywhere
   pg
   pry
   rake (~> 13.0)
   rspec (~> 3.0)
   sequel
+  sequel-activerecord_connection
   sqlite3
   super_auth!
   zeitwerk (~> 2.6)

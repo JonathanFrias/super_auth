@@ -18,29 +18,7 @@ module SuperAuth
     yield self if block_given?
   end
 
-  def self.set_db
-    logger =
-      if defined?(Rails) && ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
-        Rails.logger
-      elsif ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
-        require "logger"
-        logger = Logger.new(STDOUT)
-      else
-        nil
-      end
-
-    if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
-      SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
-    else
-      puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
-      SuperAuth.db = Sequel.sqlite(logger: logger, database: "./tmp/test.db")
-      install_migrations
-    end
-    Sequel::Model.default_association_options = {:class_namespace=>'SuperAuth'}
-  end
-
   def self.install_migrations
-    require "sequel"
     Sequel.extension :migration
     require "pathname"
     path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
@@ -49,7 +27,6 @@ module SuperAuth
 
   def self.uninstall_migrations
     require "sequel"
-    set_db
     Sequel.extension :migration
     require "pathname"
 
@@ -69,12 +46,44 @@ module SuperAuth
     @current_user
   end
 
-  def self.db=(db)
-    @db = db
+  def self.db
+    return @db if !@db.nil?
+
+    if !Gem::Specification.find_by_name("activerecord").nil?
+      require "active_record"
+
+      if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty? && ::ActiveRecord::Base.connected?
+        puts "Already connected to database, ignoring specified ENV SUPER_AUTH_DATABASE_URL."
+      elsif !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+        ::ActiveRecord::Base.establish_connection(ENV['SUPER_AUTH_DATABASE_URL'])
+      else
+        puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
+        ::ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+      end
+      logger = ::ActiveRecord::Base.logger
+
+      case ::ActiveRecord::Base.adapter_class.to_s
+      when "ActiveRecord::ConnectionAdapters::SQLite3Adapter"
+        SuperAuth.db = Sequel.sqlite(logger: logger, extensions: :activerecord_connection)
+      when "ActiveRecord::ConnectionAdapters::PostgreSQLAdapter"
+        SuperAuth.db = Sequel.postgres(logger: logger, extensions: :activerecord_connection)
+      when "ActiveRecord::ConnectionAdapters::Mysql2Adapter"
+        SuperAuth.db = Sequel.mysql2(logger: logger, extensions: :activerecord_connection)
+      else
+        puts "Unknown adapter: #{::ActiveRecord::Base.adapter_class}"
+      end
+    else
+      if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+        SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
+      else
+        puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
+        SuperAuth.db = Sequel.sqlite(logger: logger)
+      end
+    end
   end
 
-  def self.db
-    @db
+  def self.db=(db)
+    @db = db
   end
 end
 

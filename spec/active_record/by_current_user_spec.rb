@@ -1,19 +1,26 @@
 require "spec_helper"
+require "active_record" unless Gem::Specification.find_by_name("activerecord").nil?
 
 RSpec.describe SuperAuth do
+  let(:db) { SuperAuth.db }
 
   around do |example|
     # TODO: Fix this. This sort of test setup works, but it should be consolidated betterer.
-    ENV['SUPER_AUTH_DATABASE_URL'], orig = 'sqlite://./tmp/test.db', ENV['SUPER_AUTH_DATABASE_URL']
-    # ENV["SUPER_AUTH_LOG_LEVEL"] = "debug"
-    SuperAuth.set_db
     SuperAuth.install_migrations
+    SuperAuth::ActiveRecord::Edge.delete_all
+    SuperAuth::ActiveRecord::Group.delete_all
+    SuperAuth::ActiveRecord::User.delete_all
+    SuperAuth::ActiveRecord::Permission.delete_all
+    SuperAuth::ActiveRecord::Role.delete_all
+    SuperAuth::ActiveRecord::Resource.delete_all
     SuperAuth.db.run "create table if not exists resources (id integer primary key, name varchar(255))"
     SuperAuth.db.run "create table if not exists external_users (id integer primary key, name varchar(255))"
-    SuperAuth::ActiveRecord::User.itself # Loads if it it hasn't been loaded yet. TODO: Make this the normal ApplicationRecord rails style
-    ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: './tmp/test.db')
+
+    # SuperAuth::ActiveRecord::User.itself # Loads if it it hasn't been loaded yet. TODO: Make this the normal ApplicationRecord rails style
+
     example.run
-    ENV['SUPER_AUTH_DATABASE_URL'] = orig
+
+    SuperAuth.uninstall_migrations
   end
 
   let(:resource_class) do
@@ -62,12 +69,12 @@ RSpec.describe SuperAuth do
     let(:external_instance) { external_user_resource.create(name: "external user") }
 
     it "Can load the activerecord module" do
-      expect(resource_class.limit(10).to_sql).to eq %Q[SELECT "resources".* FROM "resources" WHERE "resources"."id" IN (SELECT "super_auth_authorizations"."resource_id" FROM "super_auth_authorizations" WHERE "super_auth_authorizations"."user_id" = #{SuperAuth.current_user.id}) LIMIT 10]
+      expect(resource_class.limit(10).to_sql).to eq %Q[SELECT "resources".* FROM "resources" WHERE "resources"."id" IN (SELECT "super_auth_authorizations"."resource_id" FROM "super_auth_authorizations" WHERE "super_auth_authorizations"."user_id" = #{SuperAuth.current_user.id} AND "super_auth_authorizations"."resource_external_type" = 'Resource') LIMIT 10]
     end
 
     it "allows logging in with the external user" do
       SuperAuth.current_user = external_user_resource.create(name: "external user")
-      expect(resource_class.limit(10).to_sql).to eq %Q[SELECT "resources".* FROM "resources" WHERE "resources"."id" IN (SELECT "super_auth_authorizations"."resource_id" FROM "super_auth_authorizations" WHERE "super_auth_authorizations"."user_external_id" = '#{SuperAuth.current_user.id}' AND "super_auth_authorizations"."user_external_type" = 'ExternalUser') LIMIT 10]
+      expect(resource_class.limit(10).to_sql).to eq %Q[SELECT "resources".* FROM "resources" WHERE "resources"."id" IN (SELECT "super_auth_authorizations"."resource_id" FROM "super_auth_authorizations" WHERE "super_auth_authorizations"."user_external_id" = '#{SuperAuth.current_user.id}' AND "super_auth_authorizations"."user_external_type" = 'ExternalUser' AND "super_auth_authorizations"."resource_external_type" = 'Resource') LIMIT 10]
     end
 
     it "authenticates via the normal way" do
@@ -81,7 +88,6 @@ RSpec.describe SuperAuth do
       SuperAuth::ActiveRecord::Edge.create(permission:, group:)
       SuperAuth::ActiveRecord::Edge.create(permission:, resource:)
 
-      ActiveRecord::Base.logger = Logger.new(STDOUT)
       SuperAuth::ActiveRecord::Edge.create(group: group, resource: resource)
 
       expect(external_user_resource.count).to eq 1
