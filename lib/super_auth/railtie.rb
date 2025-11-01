@@ -19,11 +19,17 @@ module SuperAuth
       end
 
       initializer "super_auth.initialize" do
-        # Prefer ActiveRecord models when in a Rails environment
         if defined?(ActiveRecord) && defined?(ActiveRecord::Base)
+          SuperAuth.db
+          begin
+            SuperAuth.load
+          rescue Sequel::DatabaseError => e
+            # Tables don't exist yet (e.g., before migrations are run)
+            # This is OK - models will be loaded when needed
+            Rails.logger.debug "SuperAuth Sequel models not loaded: #{e.message}" if defined?(Rails.logger)
+          end
           require "super_auth/active_record"
         elsif defined?(Sequel) && Sequel.const_defined?("Model")
-          # Set up Sequel database connection first before loading models
           SuperAuth.db
           SuperAuth.load
         end

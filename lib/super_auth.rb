@@ -54,17 +54,16 @@ module SuperAuth
 
     if !Gem::Specification.find_all_by_name("activerecord").empty?
       require "active_record"
+      extensions = Gem::Specification.find_all_by_name("sequel-activerecord_connection").any? ? { extensions: :activerecord_connection } : {}
 
-      if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty? && ::ActiveRecord::Base.connected?
-        puts "Already connected to database, ignoring specified ENV SUPER_AUTH_DATABASE_URL."
-      elsif !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+      if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
         ::ActiveRecord::Base.establish_connection(ENV['SUPER_AUTH_DATABASE_URL'])
+      elsif (ENV['SUPER_AUTH_DATABASE_URL'].nil? || ENV['SUPER_AUTH_DATABASE_URL'].empty?) && (::ActiveRecord::Base.connected? || !extensions.empty?)
+        # Piggyback on the existing AR connection
       else
         puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
         ::ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
       end
-
-      extensions = Gem::Specification.find_all_by_name("sequel-activerecord_connection").any? ? { extensions: :activerecord_connection } : {}
 
       case ::ActiveRecord::Base.adapter_class.to_s
       when "ActiveRecord::ConnectionAdapters::SQLite3Adapter"
