@@ -5,8 +5,8 @@ RSpec.describe SuperAuth do
   let(:db) { SuperAuth.db }
 
   around do |example|
-    # TODO: Fix this. This sort of test setup works, but it should be consolidated betterer.
     SuperAuth.install_migrations
+    SuperAuth.load
     SuperAuth::ActiveRecord::Edge.delete_all
     SuperAuth::ActiveRecord::Group.delete_all
     SuperAuth::ActiveRecord::User.delete_all
@@ -79,18 +79,15 @@ RSpec.describe SuperAuth do
 
     it "authenticates via the normal way" do
       group = SuperAuth::ActiveRecord::Group.create(name: "group")
-        nested_group = SuperAuth::ActiveRecord::Group.create(name: "nested group", parent: group)
-      SuperAuth::ActiveRecord::Edge.create(user: SuperAuth.current_user, group: nested_group)
 
       resource = SuperAuth::ActiveRecord::Resource.create(name: "resource", external: external_instance)
       permission = SuperAuth::ActiveRecord::Permission.create(name: "permission")
 
-      SuperAuth::ActiveRecord::Edge.create(permission:, group:)
-      SuperAuth::ActiveRecord::Edge.create(permission:, resource:)
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, group:)
+      SuperAuth::ActiveRecord::Edge.create!(permission:, group:)
+      SuperAuth::ActiveRecord::Edge.create!(permission:, resource:)
 
-      SuperAuth::ActiveRecord::Edge.create(group: group, resource: resource)
-
-      expect(external_user_resource.count).to eq 1
+      expect(SuperAuth::ActiveRecord::Edge.authorizations.count).to eq 1
     end
   end
 end

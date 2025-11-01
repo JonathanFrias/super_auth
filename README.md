@@ -14,7 +14,7 @@ access control is the NUMBER 1 most common security risk in modern applications 
 ## Docs
 
 How `super_auth` stacks up against other authentication strategies:
-[Do you really understand Authentication](https://dev.to/jonathanfrias/do-you-really-understand-authorization-1o5d)
+[Do you really understand Authorization](https://dev.to/jonathanfrias/do-you-really-understand-authorization-1o5d)
 
 ## Usage
 

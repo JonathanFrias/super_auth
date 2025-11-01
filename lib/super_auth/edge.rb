@@ -1,23 +1,11 @@
 class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
+  plugin :dirty
+
   many_to_one :user
   many_to_one :group
   many_to_one :permission
   many_to_one :role
   many_to_one :resource
-
-  def before_save
-    @affected_users = SuperAuth::Authorization.where(user_id: user_id).distinct.select_map(:user_id) + [user_id]
-  end
-
-  def after_save
-    SuperAuth::Authorization.db.transaction do
-      SuperAuth::Authorization.where(user_id: @affected_users).delete
-      SuperAuth::Authorization.multi_insert(
-        SuperAuth::Edge.authorizations.where(user_id: @affected_users)
-        .to_a
-      )
-    end
-  end
 
   class << self
 
@@ -34,6 +22,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         Sequel[:super_auth_users][:id].as(:user_id),
         Sequel[:super_auth_users][:name].as(:user_name),
         Sequel[:super_auth_users][:external_id].as(:user_external_id),
+        Sequel[:super_auth_users][:external_type].as(:user_external_type),
         Sequel[:super_auth_users][:created_at].as(:user_created_at),
         Sequel[:super_auth_users][:updated_at].as(:user_updated_at),
         Sequel[:groups][:id].as(:group_id),
@@ -67,6 +56,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:id].as(:user_id),
           Sequel[:super_auth_users][:name].as(:user_name),
           Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:external_type].as(:user_external_type),
           Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
 
@@ -93,7 +83,8 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
           Sequel[:super_auth_resources][:id].as(:resource_id),
           Sequel[:super_auth_resources][:name].as(:resource_name),
-          Sequel[:super_auth_resources][:external_id].as(:resource_external_id)
+          Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+          Sequel[:super_auth_resources][:external_type].as(:resource_external_type)
         )
        .join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:users_groups_roles_permissions_resources][:role_id])
        .join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id])
@@ -103,13 +94,18 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
     end
 
     def users_groups_permissions_resources
-      SuperAuth::User.
+      SuperAuth::User.db[:super_auth_users].
         join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
         join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), id: :group_id).
+        join(Sequel[:super_auth_edges].as(:group_edges), Sequel[:group_edges][:group_id] => Sequel[:groups][:id]).
+        join(Sequel[:super_auth_permissions], id: Sequel[:group_edges][:permission_id]).
+        join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
+        join(Sequel[:super_auth_resources], id: Sequel[:permission_edges][:resource_id]).
         select(
           Sequel[:super_auth_users][:id].as(:user_id),
           Sequel[:super_auth_users][:name].as(:user_name),
           Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:external_type].as(:user_external_type),
           Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
 
@@ -137,11 +133,8 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_resources][:id].as(:resource_id),
           Sequel[:super_auth_resources][:name].as(:resource_name),
           Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+          Sequel[:super_auth_resources][:external_type].as(:resource_external_type),
         ).
-        join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:group_id] => Sequel[:groups][:id]).
-        join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
-        join(Sequel[:super_auth_edges].as(:resource_edges), Sequel[:resource_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
-        join(Sequel[:super_auth_resources], id: Sequel[:resource_edges][:resource_id]).
         distinct
     end
 
@@ -153,6 +146,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:id].as(:user_id),
           Sequel[:super_auth_users][:name].as(:user_name),
           Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:external_type].as(:user_external_type),
           Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
 
@@ -180,6 +174,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_resources][:id].as(:resource_id),
           Sequel[:super_auth_resources][:name].as(:resource_name),
           Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+          Sequel[:super_auth_resources][:external_type].as(:resource_external_type),
       ).
       join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:roles][:id]).
       join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
@@ -195,6 +190,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:id].as(:user_id),
           Sequel[:super_auth_users][:name].as(:user_name),
           Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:external_type].as(:user_external_type),
           Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
 
@@ -221,7 +217,8 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
           Sequel[:super_auth_resources][:id].as(:resource_id),
           Sequel[:super_auth_resources][:name].as(:resource_name),
-          Sequel[:super_auth_resources][:external_id].as(:resource_external_id)
+          Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+          Sequel[:super_auth_resources][:external_type].as(:resource_external_type)
         ).
       join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:user_id] => Sequel[:super_auth_users][:id]).
       join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
@@ -237,6 +234,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:id].as(:user_id),
           Sequel[:super_auth_users][:name].as(:user_name),
           Sequel[:super_auth_users][:external_id].as(:user_external_id),
+          Sequel[:super_auth_users][:external_type].as(:user_external_type),
           Sequel[:super_auth_users][:created_at].cast(:text).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(:text).as(:user_updated_at),
 
@@ -264,10 +262,21 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
           Sequel[:super_auth_resources][:id].as(:resource_id),
           Sequel[:super_auth_resources][:name].as(:resource_name),
-          Sequel[:super_auth_resources][:external_id].as(:resource_external_id)
+          Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+          Sequel[:super_auth_resources][:external_type].as(:resource_external_type)
         ).
       join(Sequel[:super_auth_resources], Sequel[:user_edges][:resource_id] => Sequel[:super_auth_resources][:id]).
       distinct
     end
+  end
+
+  def to_h
+    {
+      user: self&.user&.name,
+      group: self&.group&.name,
+      role: self&.role&.name,
+      resource: self&.resource&.name,
+      permission: self&.permission&.name,
+    }
   end
 end

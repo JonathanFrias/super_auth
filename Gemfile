@@ -1,8 +1,3 @@
-# See https://blog.pawelpokrywka.com/p/gem-with-zeitwerk-as-development-only-dependency
-module ::SuperAuth
-  AUTOLOADERS = []
-end
-
 source "https://rubygems.org"
 # Specify your gem's dependencies in super_auth.gemspec
 gemspec

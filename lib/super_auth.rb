@@ -1,21 +1,24 @@
 require_relative "super_auth/version"
-
-if defined? SuperAuth::AUTOLOADERS
-  require 'zeitwerk'
-  SuperAuth::AUTOLOADERS << Zeitwerk::Loader.for_gem.tap do |loader|
-    loader.ignore("#{__dir__}/basic_loader.rb")
-    loader.setup
-  end
-  require "sequel"
-else
-  require 'basic_loader'
-end
+require "sequel"
 
 module SuperAuth
   class Error < StandardError; end
 
   def self.setup
     yield self if block_given?
+  end
+
+  def self.load
+    require "super_auth/authorization"
+    require "super_auth/edge"
+    require "super_auth/nestable"
+    require "super_auth/group"
+    require "super_auth/permission"
+    require "super_auth/railtie"
+    require "super_auth/resource"
+    require "super_auth/role"
+    require "super_auth/user"
+    require "super_auth/active_record" if defined?(ActiveRecord::Base)
   end
 
   def self.install_migrations
@@ -49,7 +52,7 @@ module SuperAuth
   def self.db
     return @db if !@db.nil?
 
-    if !Gem::Specification.find_by_name("activerecord").nil?
+    if !Gem::Specification.find_all_by_name("activerecord").empty?
       require "active_record"
 
       if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty? && ::ActiveRecord::Base.connected?
@@ -60,24 +63,35 @@ module SuperAuth
         puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
         ::ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
       end
-      logger = ::ActiveRecord::Base.logger
+
+      extensions = Gem::Specification.find_all_by_name("sequel-activerecord_connection").any? ? { extensions: :activerecord_connection } : {}
 
       case ::ActiveRecord::Base.adapter_class.to_s
       when "ActiveRecord::ConnectionAdapters::SQLite3Adapter"
-        SuperAuth.db = Sequel.sqlite(logger: logger, extensions: :activerecord_connection)
+        SuperAuth.db = Sequel.sqlite(**extensions)
       when "ActiveRecord::ConnectionAdapters::PostgreSQLAdapter"
-        SuperAuth.db = Sequel.postgres(logger: logger, extensions: :activerecord_connection)
+        SuperAuth.db = Sequel.postgres(**extensions)
       when "ActiveRecord::ConnectionAdapters::Mysql2Adapter"
-        SuperAuth.db = Sequel.mysql2(logger: logger, extensions: :activerecord_connection)
+        SuperAuth.db = Sequel.mysql2(**extensions)
       else
         puts "Unknown adapter: #{::ActiveRecord::Base.adapter_class}"
       end
     else
+      logger =
+      if defined?(Rails) && ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
+        { logger: Rails.logger }
+      elsif ENV["SUPER_AUTH_LOG_LEVEL"] == "debug"
+        require "logger"
+        { logger: Logger.new(STDOUT) }
+      else
+        {} # no logger
+      end
+
       if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
-        SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], logger: logger)
+        SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], **logger)
       else
         puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
-        SuperAuth.db = Sequel.sqlite(logger: logger)
+        SuperAuth.db = Sequel.sqlite(**logger)
       end
     end
   end

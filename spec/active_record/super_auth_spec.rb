@@ -5,6 +5,7 @@ RSpec.describe SuperAuth do
 
   around do |example|
     SuperAuth.install_migrations
+    SuperAuth.load
     db[:super_auth_edges].delete
     db[:super_auth_groups].delete
     db[:super_auth_users].delete
@@ -13,9 +14,6 @@ RSpec.describe SuperAuth do
     db[:super_auth_resources].delete
     example.run
     SuperAuth.uninstall_migrations
-  end
-
-  before do
   end
 
   it "can create a group tree" do

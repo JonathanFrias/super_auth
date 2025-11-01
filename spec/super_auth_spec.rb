@@ -5,6 +5,7 @@ RSpec.describe SuperAuth do
 
   before do
     SuperAuth.install_migrations
+    SuperAuth.load
     db[:super_auth_edges].delete
     db[:super_auth_groups].delete
     db[:super_auth_users].delete
