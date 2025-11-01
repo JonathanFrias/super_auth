@@ -1,4 +1,17 @@
 module SuperAuth
+  if defined? Rails::Engine
+    class Engine < Rails::Engine
+      isolate_namespace SuperAuth
+
+      config.paths.add 'app/controllers', eager_load: true
+
+      # Use ActiveRecord migrations when in a Rails environment
+      if defined?(ActiveRecord)
+        config.paths['db/migrate'] = 'db/migrate_activerecord'
+      end
+    end
+  end
+
   if defined? Rails::Railtie
     class Railtie < Rails::Railtie
       rake_tasks do
@@ -6,31 +19,13 @@ module SuperAuth
       end
 
       initializer "super_auth.initialize" do
-        if defined?(Sequel) && Sequel.const_defined?("Model")
-          require 'super_auth/authorization'
-          require 'super_auth/edge'
-          require 'super_auth/nestable'
-          require 'super_auth/group'
-          require 'super_auth/permission'
-          require 'super_auth/resource'
-          require 'super_auth/role'
-          require 'super_auth/user'
-        elsif defined?(ActiveRecord)
-          require 'super_auth/active_record'
-          require 'super_auth/active_record/authorization'
-          require 'super_auth/active_record/edge'
-          require 'super_auth/active_record/group'
-          require 'super_auth/active_record/permission'
-          require 'super_auth/active_record/resource'
-          require 'super_auth/active_record/role'
-          require 'super_auth/active_record/user'
-          # SuperAuth::Authorization = SuperAuth::ActiveRecord::Authorization
-          # SuperAuth::Edge = SuperAuth::ActiveRecord::Edge
-          # SuperAuth::Group = SuperAuth::ActiveRecord::Group
-          # SuperAuth::Permission = SuperAuth::ActiveRecord::Permission
-          # SuperAuth::Resource = SuperAuth::ActiveRecord::Resource
-          # SuperAuth::User = SuperAuth::ActiveRecord::User
-          # SuperAuth::Role = SuperAuth::ActiveRecord::Role
+        # Prefer ActiveRecord models when in a Rails environment
+        if defined?(ActiveRecord) && defined?(ActiveRecord::Base)
+          require "super_auth/active_record"
+        elsif defined?(Sequel) && Sequel.const_defined?("Model")
+          # Set up Sequel database connection first before loading models
+          SuperAuth.db
+          SuperAuth.load
         end
       end
     end

@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SuperAuth Graph Visualization</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            gap: 0;
+        }
+
+        header {
+            grid-column: 1 / -1;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            font-size: 28px;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .sidebar {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+            height: 100%;
+        }
+
+        main {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .sidebar h2 {
+            font-size: 18px;
+            color: #667eea;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 5px;
+        }
+
+        .section {
+            margin-bottom: 25px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 10px;
+            border: 2px solid #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .query-section {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        select, button {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 13px;
+            background: white;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .result.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .result.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        .paths-list {
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+
+        .path-item {
+            background: white;
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+        }
+
+        #network {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .stats {
+            font-size: 12px;
+            color: #666;
+            margin-top: 10px;
+        }
+
+        .stats-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            padding: 5px;
+            background: #f8f9fa;
+            border-radius: 3px;
+        }
+
+        .stats-label {
+            font-weight: 600;
+        }
+
+        .example-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .example-buttons button {
+            font-size: 12px;
+            padding: 8px;
+        }
+
+        .info-box {
+            background: #e3f2fd;
+            padding: 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            margin-top: 15px;
+            border-left: 3px solid #2196f3;
+        }
+
+        .info-box strong {
+            color: #1976d2;
+        }
+
+        .controls {
+            margin-top: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-label {
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #555;
+        }
+
+        .node-info {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .node-info.visible {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SuperAuth Graph Visualization</h1>
+            <p class="subtitle">Interactive visualization of the authorization graph - Click nodes to explore connections</p>
+        </header>
+
+        <aside class="sidebar">
+            <div class="section query-section">
+                <h2>Authorization Query</h2>
+                <select id="userSelect">
+                    <option value="">Select User...</option>
+                </select>
+                <select id="resourceSelect">
+                    <option value="">Select Resource...</option>
+                </select>
+                <button id="queryBtn">Find Authorization Paths</button>
+                <div id="result" class="result"></div>
+            </div>
+
+            <div class="section">
+                <h2>Legend</h2>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #4A90E2;"></div>
+                    <span>Users</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #7ED321;"></div>
+                    <span>Groups (hierarchical)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #F5A623;"></div>
+                    <span>Roles (hierarchical)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #BD10E0;"></div>
+                    <span>Permissions</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #E74C3C;"></div>
+                    <span>Resources</span>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Quick Examples</h2>
+                <div class="example-buttons">
+                    <button onclick="loadExample1()">Peter → core_design_template</button>
+                    <button onclick="loadExample2()">Michael → app1 (deploy)</button>
+                    <button onclick="loadExample3()">Anna → customer_posts</button>
+                    <button onclick="clearHighlights()">Clear Highlights</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Statistics</h2>
+                <div class="stats">
+                    <div class="stats-item">
+                        <span class="stats-label">Users:</span>
+                        <span id="statUsers">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Groups:</span>
+                        <span id="statGroups">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Roles:</span>
+                        <span id="statRoles">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Permissions:</span>
+                        <span id="statPerms">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Resources:</span>
+                        <span id="statResources">0</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="stats-label">Edges:</span>
+                        <span id="statEdges">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="node-info" id="nodeInfo">
+                <strong>Selected:</strong> <span id="nodeName"></span><br>
+                <span id="nodeDetails"></span>
+            </div>
+
+            <div class="info-box">
+                <strong>How it works:</strong><br>
+                SuperAuth finds paths from Users to Resources through Groups, Roles, and Permissions.
+                If any path exists, access is granted!
+            </div>
+        </aside>
+
+        <main>
+            <div id="network"></div>
+        </main>
+    </div>
+
+    <script>
+        // Global variables for data
+        let data = { users: [], groups: [], roles: [], permissions: [], resources: [] };
+        let edges = [];
+        let network = null;
+
+        // Prepare nodes for vis.js
+        const nodes = new vis.DataSet();
+        const colorMap = {
+            user: '#4A90E2',
+            group: '#7ED321',
+            role: '#F5A623',
+            permission: '#BD10E0',
+            resource: '#E74C3C'
+        };
+
+        const edgesDataSet = new vis.DataSet();
+
+        // API base URL - can be configured
+        const API_BASE = '/super_auth';
+
+        // Fetch data from backend
+        async function loadGraphData() {
+            try {
+                const response = await fetch(`${API_BASE}/graph`);
+                const graphData = await response.json();
+
+                // Process nodes
+                graphData.nodes.forEach(node => {
+                    const entityType = node.type;
+
+                    // Group nodes by type
+                    if (entityType === 'user') data.users.push(node);
+                    else if (entityType === 'group') data.groups.push(node);
+                    else if (entityType === 'role') data.roles.push(node);
+                    else if (entityType === 'permission') data.permissions.push(node);
+                    else if (entityType === 'resource') data.resources.push(node);
+
+                    // Add to vis.js nodes
+                    nodes.add({
+                        id: node.id,
+                        label: node.label,
+                        color: {
+                            background: colorMap[node.type],
+                            border: colorMap[node.type],
+                            highlight: {
+                                background: colorMap[node.type],
+                                border: '#000'
+                            }
+                        },
+                        shape: 'circle',
+                        size: node.type === 'user' || node.type === 'resource' ? 25 : 20,
+                        font: {
+                            size: 12,
+                            color: '#333',
+                            face: 'Segoe UI'
+                        },
+                        borderWidth: 2,
+                        type: node.type,
+                        database_id: node.database_id
+                    });
+                });
+
+                // Process edges
+                graphData.edges.forEach((edge, i) => {
+                    const isDashes = edge.type === 'hierarchy';
+                    const edgeData = {
+                        id: i,
+                        from: edge.from,
+                        to: edge.to,
+                        arrows: '',
+                        color: isDashes ? { color: '#ccc' } : { color: '#848484' },
+                        width: isDashes ? 1 : 2,
+                        dashes: isDashes,
+                        smooth: { type: 'continuous' }
+                    };
+
+                    edges.push(edge);
+                    edgesDataSet.add(edgeData);
+                });
+
+                // Update stats
+                updateStats(graphData.stats);
+
+                // Initialize network
+                initializeNetwork();
+
+                // Populate dropdowns
+                populateDropdowns();
+
+            } catch (error) {
+                console.error('Error loading graph data:', error);
+                alert('Failed to load graph data. Make sure the Rails backend is running and the SuperAuth engine is mounted.');
+            }
+        }
+
+        // Initialize the network visualization
+        function initializeNetwork() {
+            const container = document.getElementById('network');
+            const networkData = { nodes: nodes, edges: edgesDataSet };
+            const options = {
+            layout: {
+                hierarchical: false
+            },
+            physics: {
+                enabled: true,
+                barnesHut: {
+                    gravitationalConstant: -3000,
+                    centralGravity: 0.3,
+                    springLength: 150,
+                    springConstant: 0.04
+                },
+                stabilization: {
+                    iterations: 200
+                }
+            },
+            interaction: {
+                hover: true,
+                tooltipDelay: 200,
+                zoomView: true,
+                dragView: true
+            },
+            nodes: {
+                shadow: {
+                    enabled: true,
+                    color: 'rgba(0,0,0,0.2)',
+                    size: 5,
+                    x: 2,
+                    y: 2
+                }
+            }
+        };
+
+            network = new vis.Network(container, networkData, options);
+
+            // Setup event handlers
+            network.on('selectNode', (params) => {
+                const nodeId = params.nodes[0];
+                const node = nodes.get(nodeId);
+                const nodeInfo = document.getElementById('nodeInfo');
+                const nodeName = document.getElementById('nodeName');
+                const nodeDetails = document.getElementById('nodeDetails');
+
+                nodeName.textContent = node.label;
+                nodeDetails.innerHTML = `Type: ${node.type}<br>ID: ${nodeId}`;
+                nodeInfo.classList.add('visible');
+            });
+
+            network.on('deselectNode', () => {
+                document.getElementById('nodeInfo').classList.remove('visible');
+            });
+
+            // Stabilize network
+            network.once('stabilizationIterationsDone', () => {
+                network.setOptions({ physics: false });
+            });
+        }
+
+        // Populate dropdowns
+        function populateDropdowns() {
+            const userSelect = document.getElementById('userSelect');
+            const resourceSelect = document.getElementById('resourceSelect');
+
+            // Clear existing options (except first placeholder)
+            userSelect.innerHTML = '<option value="">Select User...</option>';
+            resourceSelect.innerHTML = '<option value="">Select Resource...</option>';
+
+            data.users.forEach(user => {
+                const option = document.createElement('option');
+                option.value = user.database_id;
+                option.setAttribute('data-node-id', user.id);
+                option.textContent = user.label;
+                userSelect.appendChild(option);
+            });
+
+            data.resources.forEach(resource => {
+                const option = document.createElement('option');
+                option.value = resource.database_id;
+                option.setAttribute('data-node-id', resource.id);
+                option.textContent = resource.label;
+                resourceSelect.appendChild(option);
+            });
+        }
+
+        // Update statistics
+        function updateStats(stats) {
+            if (stats) {
+                document.getElementById('statUsers').textContent = stats.users;
+                document.getElementById('statGroups').textContent = stats.groups;
+                document.getElementById('statRoles').textContent = stats.roles;
+                document.getElementById('statPerms').textContent = stats.permissions;
+                document.getElementById('statResources').textContent = stats.resources;
+                document.getElementById('statEdges').textContent = stats.edges;
+            } else {
+                document.getElementById('statUsers').textContent = data.users.length;
+                document.getElementById('statGroups').textContent = data.groups.length;
+                document.getElementById('statRoles').textContent = data.roles.length;
+                document.getElementById('statPerms').textContent = data.permissions.length;
+                document.getElementById('statResources').textContent = data.resources.length;
+                document.getElementById('statEdges').textContent = edges.length;
+            }
+        }
+
+        // BFS to find all paths
+        function findAllPaths(startId, endId) {
+            const paths = [];
+            const queue = [[startId]];
+            const visited = new Set();
+
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const node = path[path.length - 1];
+
+                if (node === endId) {
+                    paths.push(path);
+                    continue;
+                }
+
+                const pathKey = path.join(',');
+                if (visited.has(pathKey)) continue;
+                visited.add(pathKey);
+
+                // Find all neighbors
+                edges.forEach(edge => {
+                    if (edge.from === node && !path.includes(edge.to)) {
+                        queue.push([...path, edge.to]);
+                    }
+                    if (edge.to === node && !path.includes(edge.from)) {
+                        queue.push([...path, edge.from]);
+                    }
+                });
+
+                // Limit search depth
+                if (path.length > 10) continue;
+            }
+
+            return paths;
+        }
+
+        // Get label for node ID
+        function getNodeLabel(id) {
+            const allItems = [...data.users, ...data.groups, ...data.roles, ...data.permissions, ...data.resources];
+            const item = allItems.find(i => i.id === id);
+            return item ? item.label : id;
+        }
+
+        // Query authorization
+        document.getElementById('queryBtn').addEventListener('click', async () => {
+            const userSelect = document.getElementById('userSelect');
+            const resourceSelect = document.getElementById('resourceSelect');
+            const userId = userSelect.value;
+            const resourceId = resourceSelect.value;
+            const resultDiv = document.getElementById('result');
+
+            if (!userId || !resourceId) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = 'Please select both a user and a resource.';
+                return;
+            }
+
+            // Get node IDs for graph highlighting
+            const userNodeId = userSelect.options[userSelect.selectedIndex].getAttribute('data-node-id');
+            const resourceNodeId = resourceSelect.options[resourceSelect.selectedIndex].getAttribute('data-node-id');
+
+            clearHighlights();
+
+            try {
+                // Call backend API
+                const response = await fetch(`${API_BASE}/graph/authorize?user_id=${userId}&resource_id=${resourceId}`);
+                const result = await response.json();
+
+                if (result.authorized) {
+                    resultDiv.className = 'result success';
+                    resultDiv.innerHTML = `<strong>Access Granted!</strong> Found ${result.count} authorization path(s):<br>`;
+
+                    const pathsList = document.createElement('div');
+                    pathsList.className = 'paths-list';
+
+                    result.paths.forEach((path, i) => {
+                        const pathItem = document.createElement('div');
+                        pathItem.className = 'path-item';
+                        pathItem.innerHTML = `Path ${i + 1}: ${path.join(' → ')}`;
+                        pathsList.appendChild(pathItem);
+                    });
+
+                    resultDiv.appendChild(pathsList);
+
+                    // Highlight path on graph using local node IDs
+                    if (userNodeId && resourceNodeId) {
+                        const localPath = findAllPaths(userNodeId, resourceNodeId);
+                        if (localPath.length > 0) {
+                            highlightPath(localPath[0]);
+                        }
+                    }
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.innerHTML = '<strong>Access Denied!</strong> No authorization path found.';
+                }
+            } catch (error) {
+                console.error('Error querying authorization:', error);
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = '<strong>Error:</strong> Failed to query authorization. Check console for details.';
+            }
+        });
+
+        // Highlight a path
+        function highlightPath(path) {
+            // Highlight nodes
+            path.forEach(nodeId => {
+                nodes.update({
+                    id: nodeId,
+                    borderWidth: 4,
+                    shadow: {
+                        enabled: true,
+                        color: 'rgba(255, 215, 0, 0.6)',
+                        size: 15,
+                        x: 0,
+                        y: 0
+                    }
+                });
+            });
+
+            // Highlight edges
+            for (let i = 0; i < path.length - 1; i++) {
+                const from = path[i];
+                const to = path[i + 1];
+
+                edgesDataSet.forEach(edge => {
+                    if ((edge.from === from && edge.to === to) || (edge.from === to && edge.to === from)) {
+                        edgesDataSet.update({
+                            id: edge.id,
+                            width: 4,
+                            color: { color: '#FFD700' }
+                        });
+                    }
+                });
+            }
+
+            // Focus on path
+            network.fit({ nodes: path, animation: true });
+        }
+
+        // Clear highlights
+        function clearHighlights() {
+            nodes.forEach(node => {
+                nodes.update({
+                    id: node.id,
+                    borderWidth: 2,
+                    shadow: {
+                        enabled: true,
+                        color: 'rgba(0,0,0,0.2)',
+                        size: 5,
+                        x: 2,
+                        y: 2
+                    }
+                });
+            });
+
+            edges.forEach((e, i) => {
+                edgesDataSet.update({
+                    id: i,
+                    width: e.dashes ? 1 : 2,
+                    color: e.color || { color: '#848484' }
+                });
+            });
+        }
+
+        // Example functions
+        function loadExample1() {
+            // Peter -> core_design_template
+            const peter = data.users.find(u => u.label === 'Peter');
+            const coreDesign = data.resources.find(r => r.label === 'core_design_template');
+            if (peter && coreDesign) {
+                document.getElementById('userSelect').value = peter.database_id;
+                document.getElementById('resourceSelect').value = coreDesign.database_id;
+                document.getElementById('queryBtn').click();
+            }
+        }
+
+        function loadExample2() {
+            // Michael -> app1
+            const michael = data.users.find(u => u.label === 'Michael');
+            const app1 = data.resources.find(r => r.label === 'app1');
+            if (michael && app1) {
+                document.getElementById('userSelect').value = michael.database_id;
+                document.getElementById('resourceSelect').value = app1.database_id;
+                document.getElementById('queryBtn').click();
+            }
+        }
+
+        function loadExample3() {
+            // Anna -> customer_post1
+            const anna = data.users.find(u => u.label === 'Anna');
+            const post1 = data.resources.find(r => r.label === 'customer_post1');
+            if (anna && post1) {
+                document.getElementById('userSelect').value = anna.database_id;
+                document.getElementById('resourceSelect').value = post1.database_id;
+                document.getElementById('queryBtn').click();
+            }
+        }
+
+        // Initialize - load data from API
+        loadGraphData();
+    </script>
+</body>
+</html>

@@ -16,6 +16,35 @@ access control is the NUMBER 1 most common security risk in modern applications 
 How `super_auth` stacks up against other authentication strategies:
 [Do you really understand Authorization](https://dev.to/jonathanfrias/do-you-really-understand-authorization-1o5d)
 
+## Graph Visualization
+
+SuperAuth includes an interactive graph visualization tool to help you understand and debug your authorization rules!
+
+![SuperAuth Visualization](https://img.shields.io/badge/Visualization-Interactive-brightgreen)
+
+See the complete authorization graph with:
+- Color-coded nodes (Users, Groups, Roles, Permissions, Resources)
+- Interactive path finding
+- Real-time authorization queries
+- Example scenarios from the README
+
+**Quick Start:**
+
+```bash
+# 1. Generate initializer
+rails generate super_auth:install
+
+# 2. Mount the engine in config/routes.rb
+mount SuperAuth::Engine => '/super_auth'
+
+# 3. Load sample data (optional)
+rails runner "load File.join(SuperAuth::Engine.root, 'db/seeds/sample_data.rb')"
+```
+
+Then visit: `http://localhost:3000/super_auth/visualization`
+
+See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
+
 ## Usage
 
 SuperAuth is a rules engine engine that works on 5 different authorization concepts:

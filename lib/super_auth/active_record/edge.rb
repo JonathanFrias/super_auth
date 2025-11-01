@@ -1,10 +1,10 @@
 class SuperAuth::ActiveRecord::Edge < ActiveRecord::Base
   self.table_name = 'super_auth_edges'
-  belongs_to :user, class_name: 'SuperAuth::ActiveRecord::User'
-  belongs_to :group, class_name: 'SuperAuth::ActiveRecord::Group'
-  belongs_to :permission, class_name: 'SuperAuth::ActiveRecord::Permission'
-  belongs_to :role, class_name: 'SuperAuth::ActiveRecord::Role'
-  belongs_to :resource, class_name: 'SuperAuth::ActiveRecord::Resource'
+  belongs_to :user, class_name: 'SuperAuth::ActiveRecord::User', optional: true
+  belongs_to :group, class_name: 'SuperAuth::ActiveRecord::Group', optional: true
+  belongs_to :permission, class_name: 'SuperAuth::ActiveRecord::Permission', optional: true
+  belongs_to :role, class_name: 'SuperAuth::ActiveRecord::Role', optional: true
+  belongs_to :resource, class_name: 'SuperAuth::ActiveRecord::Resource', optional: true
 
   class << self
     def authorizations

@@ -1,6 +1,8 @@
 class SuperAuth::ActiveRecord::User < ActiveRecord::Base
   self.table_name = 'super_auth_users'
 
+  belongs_to :external, polymorphic: true, optional: true
+
   def model_name = ActiveModel::Name.new(:user)
 
   def system? = self.class.system == self

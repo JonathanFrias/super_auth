@@ -1,0 +1,29 @@
+===============================================================================
+
+SuperAuth initializer created at config/initializers/super_auth.rb
+
+Next steps:
+
+1. Run migrations to create the database tables:
+
+   SuperAuth.install_migrations
+
+   You can run this in the Rails console or add it to a rake task.
+
+2. Mount the engine in config/routes.rb:
+
+   mount SuperAuth::Engine => '/super_auth'
+
+3. (Optional) Load sample data to see the visualization in action:
+
+   rails runner "load File.join(SuperAuth::Engine.root, 'db/seeds/sample_data.rb')"
+
+4. Start your Rails server and visit:
+
+   http://localhost:3000/super_auth/visualization
+
+For more information, see:
+- VISUALIZATION.md for full documentation
+- README.md for usage examples
+
+===============================================================================
