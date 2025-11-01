@@ -10,6 +10,7 @@ gem "sequel"
 group :development, :test do
   gem "pry"
   gem "pg"
+  gem "mysql2"
   gem "sqlite3"
   gem "activerecord"
   gem "sequel-activerecord_connection"

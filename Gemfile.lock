@@ -41,6 +41,8 @@ GEM
     logger (1.7.0)
     method_source (1.0.0)
     minitest (5.25.5)
+    mysql2 (0.5.7)
+      bigdecimal
     pg (1.5.4)
     pry (0.14.2)
       coderay (~> 1.1)
@@ -81,6 +83,7 @@ PLATFORMS
 DEPENDENCIES
   activerecord
   after_commit_everywhere
+  mysql2
   pg
   pry
   rake (~> 13.0)
