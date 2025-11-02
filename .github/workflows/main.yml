@@ -50,7 +50,7 @@ jobs:
           --health-retries 5
 
     env:
-      SUPER_AUTH_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://postgres:postgres@localhost:5432/super_auth_test' || matrix.database == 'mysql' && 'mysql2://root:root@127.0.0.1:3306/super_auth_test' || 'sqlite://test.db' }}
+      SUPER_AUTH_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgres://postgres:postgres@localhost:5432/super_auth_test' || matrix.database == 'mysql' && 'mysql2://root:root@127.0.0.1:3306/super_auth_test' || 'sqlite:///tmp/test.db' }}
 
     steps:
     - uses: actions/checkout@v3
