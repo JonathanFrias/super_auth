@@ -1,5 +1,7 @@
 # SuperAuth
 
+[![Build Status](https://github.com/JonathanFrias/super_auth/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/JonathanFrias/super_auth/actions)
+
 Super auth is turn-key authorization gem that makes unauthorized access unrepresentable. **Stop writing tests for authorization with confidence**
 
 The intent is to use with ruby applications, as well as centralize authorization for multiple applications. If you look at the [OWASP top vulnerabilty](https://owasp.org/Top10/A01_2021-Broken_Access_Control/), broken
