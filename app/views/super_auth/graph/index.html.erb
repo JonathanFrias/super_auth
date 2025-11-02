@@ -577,8 +577,8 @@
   </div>
 
   <script>
-    // Base path is empty since we're rendering from within the engine
-    const basePath = '';
+    // Get the engine mount path - request.script_name contains the mount point
+    const basePath = '<%= request.script_name %>';
 
     let graphData = { users: [], groups: [], roles: [], permissions: [], resources: [], edges: [] };
     let highlightNodeById = null; // Will be set by renderGraph
