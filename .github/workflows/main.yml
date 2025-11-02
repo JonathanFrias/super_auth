@@ -1,4 +1,4 @@
-name: Ruby
+name: Super Auth CI
 
 on:
   push:

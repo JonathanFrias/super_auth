@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Interactive SuperAuth Graph</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #1a1a1a;
+      color: #fff;
+    }
+
+    .container {
+      display: flex;
+      gap: 20px;
+      height: 95vh;
+    }
+
+    .sidebar {
+      width: 350px;
+      background: #2a2a2a;
+      border-radius: 8px;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .graph-container {
+      flex: 1;
+      background: #2a2a2a;
+      border-radius: 8px;
+      position: relative;
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    .section {
+      margin-bottom: 30px;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 14px;
+      color: #aaa;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 8px 12px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+
+    button {
+      padding: 10px 20px;
+      background: #0066cc;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      width: 100%;
+    }
+
+    button:hover {
+      background: #0052a3;
+    }
+
+    button.delete {
+      background: #cc0000;
+    }
+
+    button.delete:hover {
+      background: #a30000;
+    }
+
+    .entity-list {
+      max-height: 200px;
+      overflow-y: auto;
+      background: #1a1a1a;
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 10px;
+    }
+
+    .entity-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      margin-bottom: 5px;
+      background: #2a2a2a;
+      border-radius: 4px;
+    }
+
+    .entity-item button {
+      width: auto;
+      padding: 4px 12px;
+      font-size: 12px;
+    }
+
+    .entity-item span[onclick]:hover,
+    .entity-item span[onclick^="highlightEdgeFromList"]:hover {
+      color: #ffd700;
+      text-decoration: underline;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .stat-box {
+      background: #1a1a1a;
+      padding: 15px;
+      border-radius: 4px;
+      text-align: center;
+    }
+
+    .stat-number {
+      font-size: 24px;
+      font-weight: bold;
+      color: #0066cc;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #aaa;
+      margin-top: 5px;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .node {
+      cursor: move;
+    }
+
+    .node circle {
+      stroke: #fff;
+      stroke-width: 2px;
+    }
+
+    .node.pinned circle {
+      stroke-dasharray: 3,3;
+    }
+
+    .node text {
+      font-size: 12px;
+      fill: #fff;
+      text-anchor: middle;
+      pointer-events: none;
+    }
+
+    .link {
+      stroke: #666;
+      stroke-width: 2px;
+      stroke-opacity: 0.6;
+      fill: none;
+      cursor: pointer;
+    }
+
+    .link.highlighted {
+      stroke: #ffd700;
+      stroke-width: 3px;
+      stroke-opacity: 1;
+    }
+
+    .node.highlighted circle {
+      stroke: #ffd700;
+      stroke-width: 4px;
+      filter: drop-shadow(0 0 8px #ffd700);
+    }
+
+    .node.dimmed {
+      opacity: 0.2;
+    }
+
+    .link.dimmed {
+      opacity: 0.1;
+    }
+
+    .message {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 15px 20px;
+      border-radius: 4px;
+      background: #0066cc;
+      color: white;
+      z-index: 1000;
+      animation: slideIn 0.3s ease;
+    }
+
+    .message.error {
+      background: #cc0000;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(400px);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .tab {
+      padding: 8px 16px;
+      background: #1a1a1a;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .tab.active {
+      background: #0066cc;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .orphan-item {
+      padding: 10px;
+      background: #2a2a2a;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      border-left: 3px solid #ff9800;
+    }
+
+    .orphan-item .name {
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    .orphan-item .reason {
+      font-size: 12px;
+      color: #aaa;
+    }
+
+    .legend {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      background: rgba(42, 42, 42, 0.95);
+      border: 1px solid #444;
+      border-radius: 8px;
+      padding: 15px;
+      z-index: 100;
+    }
+
+    .legend h4 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .legend-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .legend-color {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .legend-label {
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+      <h1>SuperAuth Graph</h1>
+
+      <!-- Filters Section -->
+      <div class="section">
+        <h3>Filters</h3>
+        <div class="form-group">
+          <label for="filter-user">User</label>
+          <select id="filter-user" onchange="applyFilters()">
+            <option value="">All Users</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="filter-resource">Resource</label>
+          <select id="filter-resource" onchange="applyFilters()">
+            <option value="">All Resources</option>
+          </select>
+        </div>
+        <button onclick="clearFilters()" style="width: 100%; padding: 8px; background: #444; border: none; color: white; border-radius: 4px; cursor: pointer;">Clear Filters</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat-box">
+          <div class="stat-number" id="user-count">0</div>
+          <div class="stat-label">Users</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-number" id="group-count">0</div>
+          <div class="stat-label">Groups</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-number" id="role-count">0</div>
+          <div class="stat-label">Roles</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-number" id="permission-count">0</div>
+          <div class="stat-label">Permissions</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-number" id="resource-count">0</div>
+          <div class="stat-label">Resources</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-number" id="edge-count">0</div>
+          <div class="stat-label">Edges</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <button onclick="compileAuthorizations()" style="background: #9C27B0;">
+          Compile Authorizations
+        </button>
+        <p style="font-size: 12px; color: #aaa; margin-top: 10px;">
+          Analyzes all edges and populates the authorizations table with complete user-to-resource paths for auditing.
+        </p>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" data-tab="add">Add</div>
+        <div class="tab" data-tab="manage">Manage</div>
+        <div class="tab" data-tab="orphans">Orphans</div>
+      </div>
+
+      <div class="tab-content active" id="add-tab">
+        <div class="section">
+          <h3>Add User</h3>
+          <form id="add-user-form">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+            <button type="submit">Add User</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Add Group</h3>
+          <form id="add-group-form">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+            <div class="form-group">
+              <label>Parent Group (optional)</label>
+              <select name="parent_id" id="parent-group-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <button type="submit">Add Group</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Add Role</h3>
+          <form id="add-role-form">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+            <div class="form-group">
+              <label>Parent Role (optional)</label>
+              <select name="parent_id" id="parent-role-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <button type="submit">Add Role</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Add Permission</h3>
+          <form id="add-permission-form">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+            <button type="submit">Add Permission</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Add Resource</h3>
+          <form id="add-resource-form">
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" name="name" required>
+            </div>
+            <button type="submit">Add Resource</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Add Edge (Connection)</h3>
+          <form id="add-edge-form">
+            <div class="form-group">
+              <label>User</label>
+              <select name="user_id" id="edge-user-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Group</label>
+              <select name="group_id" id="edge-group-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Role</label>
+              <select name="role_id" id="edge-role-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Permission</label>
+              <select name="permission_id" id="edge-permission-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Resource</label>
+              <select name="resource_id" id="edge-resource-select">
+                <option value="">None</option>
+              </select>
+            </div>
+            <button type="submit">Add Edge</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="tab-content" id="manage-tab">
+        <div class="section">
+          <h3>Users</h3>
+          <div class="entity-list" id="users-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Groups</h3>
+          <div class="entity-list" id="groups-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Roles</h3>
+          <div class="entity-list" id="roles-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Permissions</h3>
+          <div class="entity-list" id="permissions-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Resources</h3>
+          <div class="entity-list" id="resources-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Edges</h3>
+          <div class="entity-list" id="edges-list"></div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="orphans-tab">
+        <p style="color: #aaa; margin-bottom: 20px;">
+          Orphaned records are entities not part of any complete authorization path between a user and a resource.
+        </p>
+
+        <button onclick="loadOrphans()" style="margin-bottom: 20px;">
+          Refresh Orphans
+        </button>
+
+        <div class="section">
+          <h3>Orphaned Users (<span id="orphan-users-count">0</span>)</h3>
+          <div class="entity-list" id="orphan-users-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Orphaned Groups (<span id="orphan-groups-count">0</span>)</h3>
+          <div class="entity-list" id="orphan-groups-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Orphaned Roles (<span id="orphan-roles-count">0</span>)</h3>
+          <div class="entity-list" id="orphan-roles-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Orphaned Permissions (<span id="orphan-permissions-count">0</span>)</h3>
+          <div class="entity-list" id="orphan-permissions-list"></div>
+        </div>
+
+        <div class="section">
+          <h3>Orphaned Resources (<span id="orphan-resources-count">0</span>)</h3>
+          <div class="entity-list" id="orphan-resources-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="graph-container">
+      <svg id="graph-svg"></svg>
+
+      <!-- Legend -->
+      <div class="legend">
+        <h4>Node Types</h4>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #4CAF50;"></div>
+          <div class="legend-label">User</div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #2196F3;"></div>
+          <div class="legend-label">Group</div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #FF9800;"></div>
+          <div class="legend-label">Role</div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #9C27B0;"></div>
+          <div class="legend-label">Permission</div>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #F44336;"></div>
+          <div class="legend-label">Resource</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Base path is empty since we're rendering from within the engine
+    const basePath = '';
+
+    let graphData = { users: [], groups: [], roles: [], permissions: [], resources: [], edges: [] };
+    let highlightNodeById = null; // Will be set by renderGraph
+    let highlightEdgeByData = null; // Will be set by renderGraph
+
+    // Colors for different node types
+    const colors = {
+      user: '#4CAF50',
+      group: '#2196F3',
+      role: '#FF9800',
+      permission: '#9C27B0',
+      resource: '#F44336'
+    };
+
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
+      });
+    });
+
+    // Show message
+    function showMessage(text, isError = false) {
+      const msg = document.createElement('div');
+      msg.className = 'message' + (isError ? ' error' : '');
+      msg.textContent = text;
+      document.body.appendChild(msg);
+      setTimeout(() => msg.remove(), 3000);
+    }
+
+    // Load graph data
+    async function loadGraph() {
+      try {
+        const response = await fetch(basePath + '/graph/data');
+        graphData = await response.json();
+        updateStats();
+        updateSelects();
+        updateLists();
+        renderGraph();
+      } catch (error) {
+        showMessage('Error loading graph: ' + error.message, true);
+      }
+    }
+
+    // Apply filters (client-side)
+    function applyFilters() {
+      renderGraph();
+    }
+
+    // Clear filters
+    function clearFilters() {
+      document.getElementById('filter-user').value = '';
+      document.getElementById('filter-resource').value = '';
+      renderGraph();
+    }
+
+    // Update statistics
+    function updateStats() {
+      document.getElementById('user-count').textContent = graphData.users.length;
+      document.getElementById('group-count').textContent = graphData.groups.length;
+      document.getElementById('role-count').textContent = graphData.roles.length;
+      document.getElementById('permission-count').textContent = graphData.permissions.length;
+      document.getElementById('resource-count').textContent = graphData.resources.length;
+      document.getElementById('edge-count').textContent = graphData.edges.length;
+    }
+
+    // Update select dropdowns
+    function updateSelects() {
+      // Filter dropdowns - preserve current selection
+      const filterUser = document.getElementById('filter-user');
+      const currentUserFilter = filterUser.value;
+      filterUser.innerHTML = '<option value="">All Users</option>';
+      graphData.users.forEach(u => {
+        filterUser.innerHTML += `<option value="${u.id}"${currentUserFilter == u.id ? ' selected' : ''}>${u.name}</option>`;
+      });
+
+      const filterResource = document.getElementById('filter-resource');
+      const currentResourceFilter = filterResource.value;
+      filterResource.innerHTML = '<option value="">All Resources</option>';
+      graphData.resources.forEach(r => {
+        filterResource.innerHTML += `<option value="${r.id}"${currentResourceFilter == r.id ? ' selected' : ''}>${r.name}</option>`;
+      });
+
+      // Parent group select
+      const parentGroupSelect = document.getElementById('parent-group-select');
+      parentGroupSelect.innerHTML = '<option value="">None</option>';
+      graphData.groups.forEach(g => {
+        parentGroupSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
+      });
+
+      // Parent role select
+      const parentRoleSelect = document.getElementById('parent-role-select');
+      parentRoleSelect.innerHTML = '<option value="">None</option>';
+      graphData.roles.forEach(r => {
+        parentRoleSelect.innerHTML += `<option value="${r.id}">${r.name}</option>`;
+      });
+
+      // Edge selects
+      const edgeUserSelect = document.getElementById('edge-user-select');
+      edgeUserSelect.innerHTML = '<option value="">None</option>';
+      graphData.users.forEach(u => {
+        edgeUserSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`;
+      });
+
+      const edgeGroupSelect = document.getElementById('edge-group-select');
+      edgeGroupSelect.innerHTML = '<option value="">None</option>';
+      graphData.groups.forEach(g => {
+        edgeGroupSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
+      });
+
+      const edgeRoleSelect = document.getElementById('edge-role-select');
+      edgeRoleSelect.innerHTML = '<option value="">None</option>';
+      graphData.roles.forEach(r => {
+        edgeRoleSelect.innerHTML += `<option value="${r.id}">${r.name}</option>`;
+      });
+
+      const edgePermissionSelect = document.getElementById('edge-permission-select');
+      edgePermissionSelect.innerHTML = '<option value="">None</option>';
+      graphData.permissions.forEach(p => {
+        edgePermissionSelect.innerHTML += `<option value="${p.id}">${p.name}</option>`;
+      });
+
+      const edgeResourceSelect = document.getElementById('edge-resource-select');
+      edgeResourceSelect.innerHTML = '<option value="">None</option>';
+      graphData.resources.forEach(r => {
+        edgeResourceSelect.innerHTML += `<option value="${r.id}">${r.name}</option>`;
+      });
+    }
+
+    // Update entity lists
+    function updateLists() {
+      // Users list
+      const usersList = document.getElementById('users-list');
+      usersList.innerHTML = '';
+      graphData.users.forEach(u => {
+        usersList.innerHTML += `
+          <div class="entity-item">
+            <span onclick="highlightEntityFromList('user', ${u.id})" style="cursor: pointer; flex: 1;">${u.name}</span>
+            <button class="delete" onclick="deleteEntity('users', ${u.id})">Delete</button>
+          </div>
+        `;
+      });
+
+      // Groups list
+      const groupsList = document.getElementById('groups-list');
+      groupsList.innerHTML = '';
+      graphData.groups.forEach(g => {
+        const parentInfo = g.parent_id ? ` (parent: ${graphData.groups.find(p => p.id === g.parent_id)?.name || 'unknown'})` : '';
+        groupsList.innerHTML += `
+          <div class="entity-item">
+            <span onclick="highlightEntityFromList('group', ${g.id})" style="cursor: pointer; flex: 1;">${g.name}${parentInfo}</span>
+            <button class="delete" onclick="deleteEntity('groups', ${g.id})">Delete</button>
+          </div>
+        `;
+      });
+
+      // Roles list
+      const rolesList = document.getElementById('roles-list');
+      rolesList.innerHTML = '';
+      graphData.roles.forEach(r => {
+        const parentInfo = r.parent_id ? ` (parent: ${graphData.roles.find(p => p.id === r.parent_id)?.name || 'unknown'})` : '';
+        rolesList.innerHTML += `
+          <div class="entity-item">
+            <span onclick="highlightEntityFromList('role', ${r.id})" style="cursor: pointer; flex: 1;">${r.name}${parentInfo}</span>
+            <button class="delete" onclick="deleteEntity('roles', ${r.id})">Delete</button>
+          </div>
+        `;
+      });
+
+      // Permissions list
+      const permissionsList = document.getElementById('permissions-list');
+      permissionsList.innerHTML = '';
+      graphData.permissions.forEach(p => {
+        permissionsList.innerHTML += `
+          <div class="entity-item">
+            <span onclick="highlightEntityFromList('permission', ${p.id})" style="cursor: pointer; flex: 1;">${p.name}</span>
+            <button class="delete" onclick="deleteEntity('permissions', ${p.id})">Delete</button>
+          </div>
+        `;
+      });
+
+      // Resources list
+      const resourcesList = document.getElementById('resources-list');
+      resourcesList.innerHTML = '';
+      graphData.resources.forEach(r => {
+        resourcesList.innerHTML += `
+          <div class="entity-item">
+            <span onclick="highlightEntityFromList('resource', ${r.id})" style="cursor: pointer; flex: 1;">${r.name}</span>
+            <button class="delete" onclick="deleteEntity('resources', ${r.id})">Delete</button>
+          </div>
+        `;
+      });
+
+      // Edges list
+      const edgesList = document.getElementById('edges-list');
+      edgesList.innerHTML = '';
+      graphData.edges.forEach(e => {
+        const parts = [];
+        if (e.user_id) parts.push(`U:${graphData.users.find(u => u.id === e.user_id)?.name || e.user_id}`);
+        if (e.group_id) parts.push(`G:${graphData.groups.find(g => g.id === e.group_id)?.name || e.group_id}`);
+        if (e.role_id) parts.push(`R:${graphData.roles.find(r => r.id === e.role_id)?.name || e.role_id}`);
+        if (e.permission_id) parts.push(`P:${graphData.permissions.find(p => p.id === e.permission_id)?.name || e.permission_id}`);
+        if (e.resource_id) parts.push(`Res:${graphData.resources.find(r => r.id === e.resource_id)?.name || e.resource_id}`);
+
+        const edgeDataJson = JSON.stringify(e).replace(/"/g, '&quot;');
+        edgesList.innerHTML += `
+          <div class="entity-item">
+            <span onclick='highlightEdgeFromList(${edgeDataJson})' style="font-size: 11px; flex: 1; cursor: pointer;">${parts.join(' - ')}</span>
+            <button class="delete" onclick="deleteEntity('edges', ${e.id})">Delete</button>
+          </div>
+        `;
+      });
+    }
+
+    // Highlight entity from list click
+    function highlightEntityFromList(type, id) {
+      if (highlightNodeById) {
+        highlightNodeById(type, id);
+      }
+    }
+
+    // Highlight edge from list click
+    function highlightEdgeFromList(edgeData) {
+      if (highlightEdgeByData) {
+        highlightEdgeByData(edgeData);
+      }
+    }
+
+    // Render graph with D3
+    function renderGraph() {
+      const svg = d3.select('#graph-svg');
+      svg.selectAll('*').remove();
+
+      const width = document.querySelector('.graph-container').clientWidth;
+      const height = document.querySelector('.graph-container').clientHeight;
+
+      // Create a container group for zoom/pan
+      const g = svg.append('g');
+
+      // Add zoom behavior
+      const zoom = d3.zoom()
+        .scaleExtent([0.1, 4])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+        });
+
+      svg.call(zoom);
+
+      // Apply client-side filters
+      // Create nodes array - backend already filtered the data
+      const nodes = [
+        ...graphData.users.map(u => ({ ...u, type: 'user' })),
+        ...graphData.groups.map(g => ({ ...g, type: 'group' })),
+        ...graphData.roles.map(r => ({ ...r, type: 'role' })),
+        ...graphData.permissions.map(p => ({ ...p, type: 'permission' })),
+        ...graphData.resources.map(r => ({ ...r, type: 'resource' }))
+      ];
+
+      // Create links array from edges
+      const links = [];
+      graphData.edges.forEach(edge => {
+        const connectedNodes = [];
+        if (edge.user_id) connectedNodes.push({ id: edge.user_id, type: 'user' });
+        if (edge.group_id) connectedNodes.push({ id: edge.group_id, type: 'group' });
+        if (edge.role_id) connectedNodes.push({ id: edge.role_id, type: 'role' });
+        if (edge.permission_id) connectedNodes.push({ id: edge.permission_id, type: 'permission' });
+        if (edge.resource_id) connectedNodes.push({ id: edge.resource_id, type: 'resource' });
+
+        for (let i = 0; i < connectedNodes.length - 1; i++) {
+          links.push({
+            source: `${connectedNodes[i].type}-${connectedNodes[i].id}`,
+            target: `${connectedNodes[i + 1].type}-${connectedNodes[i + 1].id}`,
+            edgeId: edge.id
+          });
+        }
+      });
+
+      // Add parent-child links for groups and roles
+      graphData.groups.forEach(g => {
+        if (g.parent_id) {
+          links.push({
+            source: `group-${g.parent_id}`,
+            target: `group-${g.id}`,
+            isHierarchy: true
+          });
+        }
+      });
+
+      graphData.roles.forEach(r => {
+        if (r.parent_id) {
+          links.push({
+            source: `role-${r.parent_id}`,
+            target: `role-${r.id}`,
+            isHierarchy: true
+          });
+        }
+      });
+
+      // Create simulation
+      const simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => `${d.type}-${d.id}`).distance(100))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(40));
+
+      // Create links
+      const link = g.append('g')
+        .selectAll('line')
+        .data(links)
+        .join('line')
+        .attr('class', 'link')
+        .style('stroke-dasharray', d => d.isHierarchy ? '5,5' : 'none')
+        .on('click', function(event, d) {
+          event.stopPropagation();
+          highlightEdge(d);
+        });
+
+      // Create nodes
+      const node = g.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .join('g')
+        .attr('class', 'node')
+        .on('click', function(event, d) {
+          event.stopPropagation();
+          highlightNode(d, this);
+        })
+        .on('dblclick', function(event, d) {
+          event.stopPropagation();
+          // Double-click to unpin node
+          d.fx = null;
+          d.fy = null;
+          d3.select(this).classed('pinned', false);
+          simulation.alpha(0.3).restart();
+        })
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
+
+      node.append('circle')
+        .attr('r', 20)
+        .attr('fill', d => colors[d.type]);
+
+      node.append('text')
+        .attr('dy', 30)
+        .text(d => d.name);
+
+      // Click on background to clear highlights
+      svg.on('click', clearHighlights);
+
+      // Highlight functionality
+      let selectedNode = null;
+      let selectedEdge = null;
+
+      function highlightNode(d, nodeElement) {
+        // If clicking the same node, clear highlights
+        if (selectedNode && selectedNode.id === d.id && selectedNode.type === d.type) {
+          clearHighlights();
+          return;
+        }
+
+        selectedNode = d;
+        selectedEdge = null;
+        const nodeId = `${d.type}-${d.id}`;
+
+        // Find all connected nodes
+        const connectedNodeIds = new Set([nodeId]);
+        const connectedLinks = [];
+
+        links.forEach(link => {
+          const sourceId = typeof link.source === 'object' ? `${link.source.type}-${link.source.id}` : link.source;
+          const targetId = typeof link.target === 'object' ? `${link.target.type}-${link.target.id}` : link.target;
+
+          if (sourceId === nodeId || targetId === nodeId) {
+            connectedNodeIds.add(sourceId);
+            connectedNodeIds.add(targetId);
+            connectedLinks.push(link);
+          }
+        });
+
+        // Dim all nodes and links
+        node.classed('dimmed', true).classed('highlighted', false);
+        link.classed('dimmed', true).classed('highlighted', false);
+
+        // Highlight selected node and connected nodes
+        node.classed('highlighted', function(n) {
+          return connectedNodeIds.has(`${n.type}-${n.id}`);
+        }).classed('dimmed', function(n) {
+          return !connectedNodeIds.has(`${n.type}-${n.id}`);
+        });
+
+        // Highlight connected links
+        link.classed('highlighted', function(l) {
+          return connectedLinks.includes(l);
+        }).classed('dimmed', function(l) {
+          return !connectedLinks.includes(l);
+        });
+      }
+
+      function highlightEdge(d) {
+        // If clicking the same edge, clear highlights
+        if (selectedEdge === d) {
+          clearHighlights();
+          return;
+        }
+
+        selectedEdge = d;
+        selectedNode = null;
+
+        const sourceId = typeof d.source === 'object' ? `${d.source.type}-${d.source.id}` : d.source;
+        const targetId = typeof d.target === 'object' ? `${d.target.type}-${d.target.id}` : d.target;
+
+        // Highlight only the two nodes connected by this edge
+        const connectedNodeIds = new Set([sourceId, targetId]);
+
+        // Dim all nodes and links
+        node.classed('dimmed', true).classed('highlighted', false);
+        link.classed('dimmed', true).classed('highlighted', false);
+
+        // Highlight only the two connected nodes
+        node.classed('highlighted', function(n) {
+          return connectedNodeIds.has(`${n.type}-${n.id}`);
+        }).classed('dimmed', function(n) {
+          return !connectedNodeIds.has(`${n.type}-${n.id}`);
+        });
+
+        // Highlight only this edge
+        link.classed('highlighted', function(l) {
+          return l === d;
+        }).classed('dimmed', function(l) {
+          return l !== d;
+        });
+      }
+
+      function clearHighlights() {
+        selectedNode = null;
+        selectedEdge = null;
+        node.classed('highlighted', false).classed('dimmed', false);
+        link.classed('highlighted', false).classed('dimmed', false);
+      }
+
+      // Expose highlight function for external use
+      highlightNodeById = function(type, id) {
+        const nodeData = nodes.find(n => n.type === type && n.id === id);
+        if (nodeData) {
+          highlightNode(nodeData);
+        }
+      };
+
+      // Expose edge highlight function for external use
+      highlightEdgeByData = function(edgeData) {
+        // Find all links that are part of this edge
+        const matchingLinks = links.filter(l => l.edgeId === edgeData.id);
+
+        if (matchingLinks.length === 0) return;
+
+        // Clear previous selection
+        selectedEdge = null;
+        selectedNode = null;
+
+        // Find all nodes that are part of this edge
+        const connectedNodeIds = new Set();
+        matchingLinks.forEach(link => {
+          const sourceId = typeof link.source === 'object' ? `${link.source.type}-${link.source.id}` : link.source;
+          const targetId = typeof link.target === 'object' ? `${link.target.type}-${link.target.id}` : link.target;
+          connectedNodeIds.add(sourceId);
+          connectedNodeIds.add(targetId);
+        });
+
+        // Dim all nodes and links
+        node.classed('dimmed', true).classed('highlighted', false);
+        link.classed('dimmed', true).classed('highlighted', false);
+
+        // Highlight connected nodes
+        node.classed('highlighted', function(n) {
+          return connectedNodeIds.has(`${n.type}-${n.id}`);
+        }).classed('dimmed', function(n) {
+          return !connectedNodeIds.has(`${n.type}-${n.id}`);
+        });
+
+        // Highlight all links that are part of this edge
+        link.classed('highlighted', function(l) {
+          return matchingLinks.includes(l);
+        }).classed('dimmed', function(l) {
+          return !matchingLinks.includes(l);
+        });
+      };
+
+      // Update positions on simulation tick
+      simulation.on('tick', () => {
+        link
+          .attr('x1', d => d.source.x)
+          .attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x)
+          .attr('y2', d => d.target.y);
+
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+      });
+
+      // Drag functions
+      function dragstarted(event, d) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      }
+
+      function dragged(event, d) {
+        d.fx = event.x;
+        d.fy = event.y;
+      }
+
+      function dragended(event, d) {
+        if (!event.active) simulation.alphaTarget(0);
+        // Keep fx and fy set so the node stays where it was placed
+        // Mark node as pinned with visual indicator
+        node.filter(n => n === d).classed('pinned', true);
+      }
+    }
+
+    // Delete entity
+    async function deleteEntity(type, id) {
+      if (!confirm(`Are you sure you want to delete this ${type.slice(0, -1)}?`)) return;
+
+      try {
+        const response = await fetch(basePath + `/graph/${type}/${id}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage(`${type.slice(0, -1)} deleted successfully`);
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    }
+
+    // Form submissions
+    document.getElementById('add-user-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+
+      try {
+        const response = await fetch(basePath + '/graph/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: Object.fromEntries(formData) })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('User added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    document.getElementById('add-group-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const data = Object.fromEntries(formData);
+      if (!data.parent_id) delete data.parent_id;
+
+      try {
+        const response = await fetch(basePath + '/graph/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ group: data })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('Group added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    document.getElementById('add-role-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const data = Object.fromEntries(formData);
+      if (!data.parent_id) delete data.parent_id;
+
+      try {
+        const response = await fetch(basePath + '/graph/roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: data })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('Role added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    document.getElementById('add-permission-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+
+      try {
+        const response = await fetch(basePath + '/graph/permissions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ permission: Object.fromEntries(formData) })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('Permission added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    document.getElementById('add-resource-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+
+      try {
+        const response = await fetch(basePath + '/graph/resources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resource: Object.fromEntries(formData) })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('Resource added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    document.getElementById('add-edge-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const data = {};
+
+      // Only include non-empty values
+      for (const [key, value] of formData.entries()) {
+        if (value) data[key] = value;
+      }
+
+      if (Object.keys(data).length < 2) {
+        showMessage('Please select at least 2 entities to connect', true);
+        return;
+      }
+
+      try {
+        const response = await fetch(basePath + '/graph/edges', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ edge: data })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage('Edge added successfully');
+          e.target.reset();
+          loadGraph();
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    });
+
+    // Compile authorizations
+    async function compileAuthorizations() {
+      if (!confirm('This will recompile all authorization paths. Continue?')) return;
+
+      try {
+        const response = await fetch(basePath + '/graph/compile_authorizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          showMessage(result.message);
+        } else {
+          showMessage(result.error, true);
+        }
+      } catch (error) {
+        showMessage('Error: ' + error.message, true);
+      }
+    }
+
+    // Load orphans
+    async function loadOrphans() {
+      try {
+        const response = await fetch(basePath + '/graph/orphaned');
+        const data = await response.json();
+        const orphans = data.orphans;
+
+        // Update counts
+        document.getElementById('orphan-users-count').textContent = orphans.users.length;
+        document.getElementById('orphan-groups-count').textContent = orphans.groups.length;
+        document.getElementById('orphan-roles-count').textContent = orphans.roles.length;
+        document.getElementById('orphan-permissions-count').textContent = orphans.permissions.length;
+        document.getElementById('orphan-resources-count').textContent = orphans.resources.length;
+
+        // Update lists
+        const orphanUsersList = document.getElementById('orphan-users-list');
+        orphanUsersList.innerHTML = '';
+        if (orphans.users.length === 0) {
+          orphanUsersList.innerHTML = '<div style="color: #666; padding: 10px;">No orphaned users</div>';
+        } else {
+          orphans.users.forEach(u => {
+            orphanUsersList.innerHTML += `
+              <div class="orphan-item">
+                <div class="name">${u.name}</div>
+                <div class="reason">${u.reason}</div>
+              </div>
+            `;
+          });
+        }
+
+        const orphanGroupsList = document.getElementById('orphan-groups-list');
+        orphanGroupsList.innerHTML = '';
+        if (orphans.groups.length === 0) {
+          orphanGroupsList.innerHTML = '<div style="color: #666; padding: 10px;">No orphaned groups</div>';
+        } else {
+          orphans.groups.forEach(g => {
+            orphanGroupsList.innerHTML += `
+              <div class="orphan-item">
+                <div class="name">${g.name}</div>
+                <div class="reason">${g.reason}</div>
+              </div>
+            `;
+          });
+        }
+
+        const orphanRolesList = document.getElementById('orphan-roles-list');
+        orphanRolesList.innerHTML = '';
+        if (orphans.roles.length === 0) {
+          orphanRolesList.innerHTML = '<div style="color: #666; padding: 10px;">No orphaned roles</div>';
+        } else {
+          orphans.roles.forEach(r => {
+            orphanRolesList.innerHTML += `
+              <div class="orphan-item">
+                <div class="name">${r.name}</div>
+                <div class="reason">${r.reason}</div>
+              </div>
+            `;
+          });
+        }
+
+        const orphanPermissionsList = document.getElementById('orphan-permissions-list');
+        orphanPermissionsList.innerHTML = '';
+        if (orphans.permissions.length === 0) {
+          orphanPermissionsList.innerHTML = '<div style="color: #666; padding: 10px;">No orphaned permissions</div>';
+        } else {
+          orphans.permissions.forEach(p => {
+            orphanPermissionsList.innerHTML += `
+              <div class="orphan-item">
+                <div class="name">${p.name}</div>
+                <div class="reason">${p.reason}</div>
+              </div>
+            `;
+          });
+        }
+
+        const orphanResourcesList = document.getElementById('orphan-resources-list');
+        orphanResourcesList.innerHTML = '';
+        if (orphans.resources.length === 0) {
+          orphanResourcesList.innerHTML = '<div style="color: #666; padding: 10px;">No orphaned resources</div>';
+        } else {
+          orphans.resources.forEach(r => {
+            orphanResourcesList.innerHTML += `
+              <div class="orphan-item">
+                <div class="name">${r.name}</div>
+                <div class="reason">${r.reason}</div>
+              </div>
+            `;
+          });
+        }
+
+        showMessage('Orphans loaded successfully');
+      } catch (error) {
+        showMessage('Error loading orphans: ' + error.message, true);
+      }
+    }
+
+    // Initial load
+    loadGraph();
+  </script>
+</body>
+</html>
