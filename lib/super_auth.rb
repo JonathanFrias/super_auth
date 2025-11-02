@@ -56,9 +56,16 @@ module SuperAuth
       require "active_record"
       extensions = Gem::Specification.find_all_by_name("sequel-activerecord_connection").any? ? { extensions: :activerecord_connection } : {}
 
-      if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+      has_env = !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
+      has_ar_connection = !extensions.empty?
+
+      if !has_ar_connection
+        puts "Found ActiveRecord but could not find the gem 'sequel-activerecord_connection' installed. SuperAuth may not always work as expected."
+      end
+
+      if has_env && !ActiveRecord::Base.connected? && has_ar_connection
         ::ActiveRecord::Base.establish_connection(ENV['SUPER_AUTH_DATABASE_URL'])
-      elsif (ENV['SUPER_AUTH_DATABASE_URL'].nil? || ENV['SUPER_AUTH_DATABASE_URL'].empty?) && (::ActiveRecord::Base.connected? || !extensions.empty?)
+      elsif has_env && !has_ar_connection
         # Piggyback on the existing AR connection
       else
         puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
