@@ -59,6 +59,22 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(user: @noob_developer, group: @feature1)
   end
 
+  let(:nested_groups_with_users) do
+    @senior_developer = SuperAuth::User.create(name: 'Señor Dev')
+    @noob_developer = SuperAuth::User.create(name: 'gotta get good')
+    @marketing_bro = SuperAuth::User.create(name: "Buy this pen!")
+    _irrelevant = SuperAuth::User.create(name: "ignore me")
+
+    @organization = SuperAuth::Group.create(name: 'Foobar Corp')
+      @developers = SuperAuth::Group.create(name: 'developers', parent: @organization)
+    _irrelevant = SuperAuth::Group.create(name: "ignore me")
+
+
+    SuperAuth::Edge.create(user: @senior_developer, group: @developers)
+    SuperAuth::Edge.create(user: @noob_developer, group: @developers)
+    SuperAuth::Edge.create(user: @marketing_bro, group: @organization)
+  end
+
   it "can merge users with groups" do
     expect(db[:super_auth_users].count).to eq 0
     expect(SuperAuth::User.count).to eq 0
@@ -148,6 +164,21 @@ RSpec.describe SuperAuth do
     edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
 
     expect(edges.count).to eq 1
+  end
+
+  it "users<->nested_groups<->permissions<->resources" do
+    nested_groups_with_users
+
+    resource = SuperAuth::Resource.create(name: 'hr')
+    talk = SuperAuth::Permission.create(name: 'talk')
+
+    SuperAuth::Edge.create(group: @organization, permission: talk)
+    SuperAuth::Edge.create(group: @developers, resource: resource)
+    SuperAuth::Edge.create(resource: resource, permission: talk)
+
+    edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
+
+    expect(edges.count).to eq 3
   end
 
   it "users<->roles<->permissions<->resources" do

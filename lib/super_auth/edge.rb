@@ -27,7 +27,10 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
     def users_groups_roles_permissions_resources
       cast_type = string_cast_type
-      users_groups_roles_ds = SuperAuth::User.join(:super_auth_edges, user_id: :id).select_all(:super_auth_users).join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), id: :group_id).select(
+      users_groups_roles_ds = SuperAuth::User.join(:super_auth_edges, user_id: :id).
+        select_all(:super_auth_users).
+        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), Sequel.function(:concat, ',', Sequel[:groups][:group_path], ',').like(Sequel.function(:concat, '%,', Sequel[:groups][:id], ',%'))).
+      select(
         Sequel[:super_auth_users][:id].as(:user_id),
         Sequel[:super_auth_users][:name].as(:user_name),
         Sequel[:super_auth_users][:external_id].as(:user_external_id),
@@ -106,7 +109,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
       cast_type = string_cast_type
       SuperAuth::User.db[:super_auth_users].
         join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
-        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), id: :group_id).
+        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), Sequel.function(:concat, ',', Sequel[:groups][:group_path], ',').like(Sequel.function(:concat, '%,', Sequel[:groups][:id], ',%'))).
         join(Sequel[:super_auth_edges].as(:group_edges), Sequel[:group_edges][:group_id] => Sequel[:groups][:id]).
         join(Sequel[:super_auth_permissions], id: Sequel[:group_edges][:permission_id]).
         join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
