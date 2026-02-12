@@ -1903,6 +1903,134 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-013: ActiveRecord Role Tree Hierarchies (Nestable)" do
+    it "single root role has role_path equal to its own id" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'root')
+      tree = SuperAuth::ActiveRecord::Role.from(
+        "(#{SuperAuth::Role.trees.sql}) as super_auth_roles"
+      ).first
+      expect(tree[:role_path]).to eq root.id.to_s
+      expect(tree[:role_name_path]).to eq 'root'
+    end
+
+    it "2-level hierarchy has correct role_path and role_name_path" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'Admin')
+      child = SuperAuth::ActiveRecord::Role.create(name: 'Editor', parent: root)
+
+      trees = SuperAuth::ActiveRecord::Role.from(
+        "(#{SuperAuth::Role.trees.sql}) as super_auth_roles"
+      ).order(:id).to_a
+      expect(trees.length).to eq 2
+
+      root_tree = trees.find { |t| t[:id] == root.id }
+      child_tree = trees.find { |t| t[:id] == child.id }
+
+      expect(root_tree[:role_path]).to eq root.id.to_s
+      expect(root_tree[:role_name_path]).to eq 'Admin'
+
+      expect(child_tree[:role_path]).to eq "#{root.id},#{child.id}"
+      expect(child_tree[:role_name_path]).to eq 'Admin,Editor'
+    end
+
+    it "3-level hierarchy has correct paths at each level" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'root')
+      child = SuperAuth::ActiveRecord::Role.create(name: 'admin', parent: root)
+      grandchild = SuperAuth::ActiveRecord::Role.create(name: 'user', parent: child)
+
+      descendants = root.descendants_dataset.order(:id).to_a
+
+      expect(descendants.map { |d| d[:role_path] }).to eq [
+        root.id.to_s,
+        "#{root.id},#{child.id}",
+        "#{root.id},#{child.id},#{grandchild.id}"
+      ]
+      expect(descendants.map { |d| d[:role_name_path] }).to eq [
+        'root',
+        'root,admin',
+        'root,admin,user'
+      ]
+    end
+
+    it "wide tree with 3+ direct children has correct paths" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'Super')
+      child_a = SuperAuth::ActiveRecord::Role.create(name: 'Admin', parent: root)
+      child_b = SuperAuth::ActiveRecord::Role.create(name: 'Editor', parent: root)
+      child_c = SuperAuth::ActiveRecord::Role.create(name: 'Viewer', parent: root)
+      child_d = SuperAuth::ActiveRecord::Role.create(name: 'Guest', parent: root)
+
+      trees = SuperAuth::ActiveRecord::Role.from(
+        "(#{SuperAuth::Role.trees.sql}) as super_auth_roles"
+      ).order(:id).to_a
+      expect(trees.length).to eq 5
+
+      [child_a, child_b, child_c, child_d].each do |child|
+        tree_node = trees.find { |t| t[:id] == child.id }
+        expect(tree_node[:role_path]).to eq "#{root.id},#{child.id}"
+        expect(tree_node[:role_name_path]).to eq "Super,#{child.name}"
+      end
+    end
+
+    it "descendants_dataset returns all descendants including the root as an ActiveRecord relation" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'root')
+      child = SuperAuth::ActiveRecord::Role.create(name: 'child', parent: root)
+      grandchild = SuperAuth::ActiveRecord::Role.create(name: 'grandchild', parent: child)
+
+      descendants = root.descendants_dataset.order(:id).to_a
+      expect(descendants.map { |d| d[:id] }).to eq [root.id, child.id, grandchild.id]
+
+      # Verify this is an ActiveRecord relation
+      expect(root.descendants_dataset).to be_a(ActiveRecord::Relation)
+    end
+
+    it "descendants_dataset on a mid-level role returns only its subtree" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'root')
+      child_a = SuperAuth::ActiveRecord::Role.create(name: 'child_a', parent: root)
+      child_b = SuperAuth::ActiveRecord::Role.create(name: 'child_b', parent: root)
+      grandchild_a = SuperAuth::ActiveRecord::Role.create(name: 'grandchild_a', parent: child_a)
+      _grandchild_b = SuperAuth::ActiveRecord::Role.create(name: 'grandchild_b', parent: child_b)
+
+      # descendants_dataset uses parent_id internally, so from child_a it traverses from root downward
+      descendants_from_root = root.descendants_dataset.order(:id).to_a
+      expect(descendants_from_root.map { |d| d[:id] }).to eq [root.id, child_a.id, child_b.id, grandchild_a.id, _grandchild_b.id]
+
+      # The child_a descendants_dataset includes its parent's subtree (same behavior as Sequel)
+      child_a_descendants = child_a.descendants_dataset.order(:id).to_a
+      child_a_ids = child_a_descendants.map { |d| d[:id] }
+      expect(child_a_ids).to include(root.id, child_a.id, grandchild_a.id)
+    end
+
+    it "roots scope returns only roles with no parent" do
+      root1 = SuperAuth::ActiveRecord::Role.create(name: 'root1')
+      root2 = SuperAuth::ActiveRecord::Role.create(name: 'root2')
+      _child = SuperAuth::ActiveRecord::Role.create(name: 'child', parent: root1)
+
+      roots = SuperAuth::ActiveRecord::Role.where(parent_id: nil).order(:id).to_a
+      expect(roots.map(&:id)).to eq [root1.id, root2.id]
+    end
+
+    it "trees scope returns all roles with their computed paths" do
+      root = SuperAuth::ActiveRecord::Role.create(name: 'Super')
+      child = SuperAuth::ActiveRecord::Role.create(name: 'Admin', parent: root)
+      grandchild = SuperAuth::ActiveRecord::Role.create(name: 'Editor', parent: child)
+
+      trees = SuperAuth::ActiveRecord::Role.from(
+        "(#{SuperAuth::Role.trees.sql}) as super_auth_roles"
+      ).order(:id).to_a
+      expect(trees.length).to eq 3
+
+      expect(trees.map { |t| t[:role_path] }).to eq [
+        root.id.to_s,
+        "#{root.id},#{child.id}",
+        "#{root.id},#{child.id},#{grandchild.id}"
+      ]
+      expect(trees.map { |t| t[:role_name_path] }).to eq [
+        'Super',
+        'Super,Admin',
+        'Super,Admin,Editor'
+      ]
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
