@@ -1340,6 +1340,159 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-009: Edge Revocation and Authorization Lifecycle" do
+    it "deleting a user->group edge removes all authorizations through that group" do
+      user = SuperAuth::User.create(name: 'Alice')
+      group = SuperAuth::Group.create(name: 'Engineering')
+      role = SuperAuth::Role.create(name: 'Developer')
+      permission = SuperAuth::Permission.create(name: 'read')
+      resource = SuperAuth::Resource.create(name: 'codebase')
+
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      # Verify authorization exists
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Alice'
+
+      # Delete the user->group edge
+      user_group_edge = SuperAuth::Edge.first(user_id: user.id, group_id: group.id)
+      user_group_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting a group->role edge removes all authorizations through that group->role connection" do
+      user = SuperAuth::User.create(name: 'Bob')
+      group = SuperAuth::Group.create(name: 'Ops')
+      role = SuperAuth::Role.create(name: 'Operator')
+      permission = SuperAuth::Permission.create(name: 'execute')
+      resource = SuperAuth::Resource.create(name: 'pipeline')
+
+      SuperAuth::Edge.create(user: user, group: group)
+      group_role_edge = SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      # Verify authorization exists
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      # Delete the group->role edge
+      group_role_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting a role->permission edge removes authorizations for that permission" do
+      user = SuperAuth::User.create(name: 'Charlie')
+      role = SuperAuth::Role.create(name: 'Admin')
+      perm_read = SuperAuth::Permission.create(name: 'read')
+      perm_write = SuperAuth::Permission.create(name: 'write')
+      resource = SuperAuth::Resource.create(name: 'database')
+
+      SuperAuth::Edge.create(user: user, role: role)
+      SuperAuth::Edge.create(role: role, permission: perm_read)
+      role_write_edge = SuperAuth::Edge.create(role: role, permission: perm_write)
+      SuperAuth::Edge.create(permission: perm_read, resource: resource)
+      SuperAuth::Edge.create(permission: perm_write, resource: resource)
+
+      # Both permissions should produce authorizations
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 2
+
+      # Delete the role->write permission edge
+      role_write_edge.destroy
+
+      # Only read permission authorization should remain
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:permission_name]).to eq 'read'
+    end
+
+    it "deleting a permission->resource edge removes authorizations for that resource" do
+      user = SuperAuth::User.create(name: 'Diana')
+      permission = SuperAuth::Permission.create(name: 'access')
+      resource1 = SuperAuth::Resource.create(name: 'server')
+      resource2 = SuperAuth::Resource.create(name: 'database')
+
+      SuperAuth::Edge.create(user: user, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource1)
+      perm_res2_edge = SuperAuth::Edge.create(permission: permission, resource: resource2)
+
+      # Both resources should produce authorizations
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 2
+
+      # Delete the permission->database edge
+      perm_res2_edge.destroy
+
+      # Only server authorization should remain
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:resource_name]).to eq 'server'
+    end
+
+    it "deleting a user->resource direct edge removes that authorization" do
+      user = SuperAuth::User.create(name: 'Eve')
+      resource = SuperAuth::Resource.create(name: 'file')
+
+      direct_edge = SuperAuth::Edge.create(user: user, resource: resource)
+
+      # Verify direct authorization exists
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Eve'
+      expect(auths.first[:resource_name]).to eq 'file'
+
+      # Delete the direct user->resource edge
+      direct_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting an edge does NOT affect unrelated authorizations for other users" do
+      # Set up two users with completely independent authorization paths
+      alice = SuperAuth::User.create(name: 'Alice')
+      bob = SuperAuth::User.create(name: 'Bob')
+      group_a = SuperAuth::Group.create(name: 'TeamA')
+      group_b = SuperAuth::Group.create(name: 'TeamB')
+      role = SuperAuth::Role.create(name: 'Worker')
+      permission = SuperAuth::Permission.create(name: 'work')
+      resource = SuperAuth::Resource.create(name: 'project')
+
+      alice_edge = SuperAuth::Edge.create(user: alice, group: group_a)
+      SuperAuth::Edge.create(user: bob, group: group_b)
+      SuperAuth::Edge.create(group: group_a, role: role)
+      SuperAuth::Edge.create(group: group_b, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      # Both users should have authorizations
+      auths = SuperAuth::Edge.authorizations.all
+      user_names = auths.map { |a| a[:user_name] }.sort
+      expect(user_names).to eq ['Alice', 'Bob']
+
+      # Delete Alice's user->group edge
+      alice_edge.destroy
+
+      # Only Bob's authorization should remain
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Bob'
+      expect(auths.first[:resource_name]).to eq 'project'
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
