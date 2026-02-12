@@ -2627,6 +2627,115 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-017: ActiveRecord Path Strategy 4 - users <-> permissions <-> resources" do
+    it "basic case: user -> permission -> resource using AR models" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Alice')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'read')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'codebase')
+
+      SuperAuth::Edge.create(user_id: user.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Alice'
+      expect(edge[:permission_name]).to eq 'read'
+      expect(edge[:resource_name]).to eq 'codebase'
+    end
+
+    it "multiple permissions on the same user and resource produce multiple records" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Bob')
+      perm_read = SuperAuth::ActiveRecord::Permission.create(name: 'read')
+      perm_write = SuperAuth::ActiveRecord::Permission.create(name: 'write')
+      perm_delete = SuperAuth::ActiveRecord::Permission.create(name: 'delete')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'database')
+
+      SuperAuth::Edge.create(user_id: user.id, permission_id: perm_read.id)
+      SuperAuth::Edge.create(user_id: user.id, permission_id: perm_write.id)
+      SuperAuth::Edge.create(user_id: user.id, permission_id: perm_delete.id)
+      SuperAuth::Edge.create(permission_id: perm_read.id, resource_id: resource.id)
+      SuperAuth::Edge.create(permission_id: perm_write.id, resource_id: resource.id)
+      SuperAuth::Edge.create(permission_id: perm_delete.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(edges.length).to eq 3
+
+      permission_names = edges.map { |e| e[:permission_name] }.sort
+      expect(permission_names).to eq ['delete', 'read', 'write']
+
+      edges.each do |edge|
+        expect(edge[:user_name]).to eq 'Bob'
+        expect(edge[:resource_name]).to eq 'database'
+      end
+    end
+
+    it "group and role fields are NULL/0 in the result" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Charlie')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'view')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'dashboard')
+
+      SuperAuth::Edge.create(user_id: user.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_name]).to be_nil
+      expect(edge[:group_path]).to be_nil
+      expect(edge[:group_name_path]).to be_nil
+      expect(edge[:group_parent_id]).to eq 0
+
+      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_name]).to be_nil
+      expect(edge[:role_path]).to be_nil
+      expect(edge[:role_name_path]).to be_nil
+      expect(edge[:role_parent_id]).to eq 0
+    end
+
+    it "user with an unrelated permission does NOT get authorized to the resource" do
+      user_authorized = SuperAuth::ActiveRecord::User.create(name: 'Insider')
+      user_unauthorized = SuperAuth::ActiveRecord::User.create(name: 'Outsider')
+      perm_a = SuperAuth::ActiveRecord::Permission.create(name: 'access')
+      perm_b = SuperAuth::ActiveRecord::Permission.create(name: 'noaccess')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'secret')
+
+      SuperAuth::Edge.create(user_id: user_authorized.id, permission_id: perm_a.id)
+      SuperAuth::Edge.create(user_id: user_unauthorized.id, permission_id: perm_b.id)
+      SuperAuth::Edge.create(permission_id: perm_a.id, resource_id: resource.id)
+      # perm_b is NOT linked to the resource
+
+      edges = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(edges.length).to eq 1
+      expect(edges.first[:user_name]).to eq 'Insider'
+    end
+
+    it "two users with the same permission both get authorized to the resource" do
+      user1 = SuperAuth::ActiveRecord::User.create(name: 'User1')
+      user2 = SuperAuth::ActiveRecord::User.create(name: 'User2')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'access')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'api')
+
+      SuperAuth::Edge.create(user_id: user1.id, permission_id: permission.id)
+      SuperAuth::Edge.create(user_id: user2.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(edges.length).to eq 2
+
+      user_names = edges.map { |e| e[:user_name] }.sort
+      expect(user_names).to eq ['User1', 'User2']
+
+      edges.each do |edge|
+        expect(edge[:permission_name]).to eq 'access'
+        expect(edge[:resource_name]).to eq 'api'
+      end
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
