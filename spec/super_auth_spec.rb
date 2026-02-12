@@ -972,6 +972,102 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-007: Path Strategy 5 - users <-> resources" do
+    it "basic case: user -> resource" do
+      user = SuperAuth::User.create(name: 'Alice')
+      resource = SuperAuth::Resource.create(name: 'codebase')
+
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      edges = SuperAuth::Edge.users_resources.all
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Alice'
+      expect(edge[:resource_name]).to eq 'codebase'
+    end
+
+    it "group, role, and permission fields are NULL/0 in the result" do
+      user = SuperAuth::User.create(name: 'Bob')
+      resource = SuperAuth::Resource.create(name: 'dashboard')
+
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      edges = SuperAuth::Edge.users_resources.all
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_name]).to be_nil
+      expect(edge[:group_path]).to be_nil
+      expect(edge[:group_name_path]).to be_nil
+      expect(edge[:group_parent_id]).to eq 0
+
+      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_name]).to be_nil
+      expect(edge[:role_path]).to be_nil
+      expect(edge[:role_name_path]).to be_nil
+      expect(edge[:role_parent_id]).to eq 0
+
+      expect(edge[:permission_id]).to eq 0
+      expect(edge[:permission_name]).to be_nil
+    end
+
+    it "user with no edge to the resource does NOT get authorized" do
+      user_authorized = SuperAuth::User.create(name: 'Insider')
+      _user_unauthorized = SuperAuth::User.create(name: 'Outsider')
+      resource = SuperAuth::Resource.create(name: 'secret')
+
+      SuperAuth::Edge.create(user: user_authorized, resource: resource)
+
+      edges = SuperAuth::Edge.users_resources.all
+      expect(edges.length).to eq 1
+      expect(edges.first[:user_name]).to eq 'Insider'
+    end
+
+    it "multiple users each with direct access to the same resource" do
+      user1 = SuperAuth::User.create(name: 'User1')
+      user2 = SuperAuth::User.create(name: 'User2')
+      user3 = SuperAuth::User.create(name: 'User3')
+      resource = SuperAuth::Resource.create(name: 'shared-doc')
+
+      SuperAuth::Edge.create(user: user1, resource: resource)
+      SuperAuth::Edge.create(user: user2, resource: resource)
+      SuperAuth::Edge.create(user: user3, resource: resource)
+
+      edges = SuperAuth::Edge.users_resources.all
+      expect(edges.length).to eq 3
+
+      user_names = edges.map { |e| e[:user_name] }.sort
+      expect(user_names).to eq ['User1', 'User2', 'User3']
+
+      edges.each do |edge|
+        expect(edge[:resource_name]).to eq 'shared-doc'
+      end
+    end
+
+    it "one user with direct access to multiple resources" do
+      user = SuperAuth::User.create(name: 'PowerUser')
+      resource1 = SuperAuth::Resource.create(name: 'database')
+      resource2 = SuperAuth::Resource.create(name: 'server')
+      resource3 = SuperAuth::Resource.create(name: 'storage')
+
+      SuperAuth::Edge.create(user: user, resource: resource1)
+      SuperAuth::Edge.create(user: user, resource: resource2)
+      SuperAuth::Edge.create(user: user, resource: resource3)
+
+      edges = SuperAuth::Edge.users_resources.all
+      expect(edges.length).to eq 3
+
+      resource_names = edges.map { |e| e[:resource_name] }.sort
+      expect(resource_names).to eq ['database', 'server', 'storage']
+
+      edges.each do |edge|
+        expect(edge[:user_name]).to eq 'PowerUser'
+      end
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
