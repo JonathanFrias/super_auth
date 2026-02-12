@@ -153,44 +153,63 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
     def users_roles_permissions_resources
       cast_type = string_cast_type
-      SuperAuth::User.
-        join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
-        join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:roles), id: :role_id).
-        select(
-          Sequel[:super_auth_users][:id].as(:user_id),
-          Sequel[:super_auth_users][:name].as(:user_name),
-          Sequel[:super_auth_users][:external_id].as(:user_external_id),
-          Sequel[:super_auth_users][:external_type].as(:user_external_type),
-          Sequel[:super_auth_users][:created_at].cast(cast_type).as(:user_created_at),
-          Sequel[:super_auth_users][:updated_at].cast(cast_type).as(:user_updated_at),
 
-          Sequel.lit(%Q[0 as "group_id"]),                                       # Sequel[:super_auth_groups][:group_id],
-          Sequel::NULL.as(:group_name),                                          # Sequel[:super_auth_groups][:group_name],
-          Sequel::NULL.as(:group_path),                                          # Sequel[:super_auth_groups][:group_path],
-          Sequel::NULL.as(:group_name_path),                                     # Sequel[:super_auth_groups][:group_name_path],
-          Sequel.lit(%Q[0 as "group_parent_id"]),                                # Sequel[:super_auth_groups][:group_parent_id],
-          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_created_at"]), # Sequel[:super_auth_groups][:group_created_at],
-          Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_updated_at"]), # Sequel[:super_auth_groups][:group_updated_at],
+      # Step 1: Find which roles users are directly linked to via edges
+      user_role_ids_ds = SuperAuth::Edge.where(Sequel.~(user_id: nil) & Sequel.~(role_id: nil)).select(:role_id)
 
-          Sequel[:roles][:id].as(:role_id),
-          Sequel[:roles][:name].as(:role_name),
-          Sequel[:roles][:role_path],
-          Sequel[:roles][:role_name_path].as(:role_name_path),
-          Sequel[:roles][:parent_id].as(:role_parent_id),
-          Sequel[:roles][:created_at].cast(cast_type).as(:role_created_at),
-          Sequel[:roles][:updated_at].cast(cast_type).as(:role_updated_at),
+      # Step 2: Expand those roles to all descendants via CTE
+      role_cte = SuperAuth::Role.cte(user_role_ids_ds).select {
+        [id.as(:role_id), name.as(:role_name), parent_id.as(:role_parent_id), role_path, role_name_path, created_at.as(:role_created_at), updated_at.as(:role_updated_at)]
+      }
 
-          Sequel[:super_auth_permissions][:id].as(:permission_id),
-          Sequel[:super_auth_permissions][:name].as(:permission_name),
-          Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
-          Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
-
-          Sequel[:super_auth_resources][:id].as(:resource_id),
-          Sequel[:super_auth_resources][:name].as(:resource_name),
-          Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
-          Sequel[:super_auth_resources][:external_type].as(:resource_external_type),
+      # Step 3: Build the query from the expanded role tree
+      SuperAuth::Edge.from(role_cte.as(:users_roles_permissions_resources)).
+      # Join user_edges — match users who link to any role in the expanded CTE
+      # The user's edge links to an ancestor role, but the CTE path contains that ancestor
+      # We use the role_path to check: the role_path of the CTE row starts with the user's linked role
+      join(Sequel[:super_auth_edges].as(:user_edges),
+        Sequel.function(:concat, ',', Sequel[:users_roles_permissions_resources][:role_path], ',').like(
+          Sequel.function(:concat, '%,', Sequel[:user_edges][:role_id].cast(cast_type), ',%')
+        )
       ).
-      join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:roles][:id]).
+      where(Sequel.~(Sequel[:user_edges][:user_id] => nil) & Sequel.~(Sequel[:user_edges][:role_id] => nil)).
+      join(Sequel[:super_auth_users], id: Sequel[:user_edges][:user_id]).
+      select(
+        Sequel[:super_auth_users][:id].as(:user_id),
+        Sequel[:super_auth_users][:name].as(:user_name),
+        Sequel[:super_auth_users][:external_id].as(:user_external_id),
+        Sequel[:super_auth_users][:external_type].as(:user_external_type),
+        Sequel[:super_auth_users][:created_at].cast(cast_type).as(:user_created_at),
+        Sequel[:super_auth_users][:updated_at].cast(cast_type).as(:user_updated_at),
+
+        Sequel.lit(%Q[0 as "group_id"]),
+        Sequel::NULL.as(:group_name),
+        Sequel::NULL.as(:group_path),
+        Sequel::NULL.as(:group_name_path),
+        Sequel.lit(%Q[0 as "group_parent_id"]),
+        Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_created_at"]),
+        Sequel.lit(%Q['1970-01-01 00:00:00.000000-00' as "group_updated_at"]),
+
+        Sequel[:users_roles_permissions_resources][:role_id],
+        Sequel[:users_roles_permissions_resources][:role_name],
+        Sequel[:users_roles_permissions_resources][:role_path],
+        Sequel[:users_roles_permissions_resources][:role_name_path],
+        Sequel[:users_roles_permissions_resources][:role_parent_id],
+        Sequel[:users_roles_permissions_resources][:role_created_at].cast(cast_type).as(:role_created_at),
+        Sequel[:users_roles_permissions_resources][:role_updated_at].cast(cast_type).as(:role_updated_at),
+
+        Sequel[:super_auth_permissions][:id].as(:permission_id),
+        Sequel[:super_auth_permissions][:name].as(:permission_name),
+        Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
+        Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
+
+        Sequel[:super_auth_resources][:id].as(:resource_id),
+        Sequel[:super_auth_resources][:name].as(:resource_name),
+        Sequel[:super_auth_resources][:external_id].as(:resource_external_id),
+        Sequel[:super_auth_resources][:external_type].as(:resource_external_type),
+      ).
+      # Join permission and resource edges on the expanded role
+      join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:users_roles_permissions_resources][:role_id]).
       join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
       join(Sequel[:super_auth_edges].as(:resource_edges), Sequel[:resource_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
       join(Sequel[:super_auth_resources], id: Sequel[:resource_edges][:resource_id]).
