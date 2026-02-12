@@ -107,10 +107,17 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
     def users_groups_permissions_resources
       cast_type = string_cast_type
+      # Join users to their group via edges, then to the group CTE to get the user's group_path.
+      # Use group_path to find all ancestor groups (any group whose id appears in the user's group_path).
+      # Then join permission edges on those ancestor groups.
       SuperAuth::User.db[:super_auth_users].
         join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
-        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:groups), Sequel.function(:concat, ',', Sequel[:groups][:group_path], ',').like(Sequel.function(:concat, '%,', Sequel[:groups][:id], ',%'))).
-        join(Sequel[:super_auth_edges].as(:group_edges), Sequel[:group_edges][:group_id] => Sequel[:groups][:id]).
+        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:user_groups), Sequel[:user_groups][:id] => Sequel[:user_edges][:group_id]).
+        join(Sequel[:super_auth_edges].as(:group_edges),
+          Sequel.function(:concat, ',', Sequel[:user_groups][:group_path], ',').like(
+            Sequel.function(:concat, '%,', Sequel[:group_edges][:group_id].cast(cast_type), ',%')
+          )
+        ).
         join(Sequel[:super_auth_permissions], id: Sequel[:group_edges][:permission_id]).
         join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
         join(Sequel[:super_auth_resources], id: Sequel[:permission_edges][:resource_id]).
@@ -122,13 +129,13 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:created_at].cast(cast_type).as(:user_created_at),
           Sequel[:super_auth_users][:updated_at].cast(cast_type).as(:user_updated_at),
 
-          Sequel[:groups][:id].as(:group_id),
-          Sequel[:groups][:name].as(:group_name),
-          Sequel[:groups][:group_path],
-          Sequel[:groups][:group_name_path],
-          Sequel[:groups][:parent_id].as(:group_parent_id),
-          Sequel[:groups][:created_at].cast(cast_type).as(:group_created_at),
-          Sequel[:groups][:updated_at].cast(cast_type).as(:group_updated_at),
+          Sequel[:user_groups][:id].as(:group_id),
+          Sequel[:user_groups][:name].as(:group_name),
+          Sequel[:user_groups][:group_path],
+          Sequel[:user_groups][:group_name_path],
+          Sequel[:user_groups][:parent_id].as(:group_parent_id),
+          Sequel[:user_groups][:created_at].cast(cast_type).as(:group_created_at),
+          Sequel[:user_groups][:updated_at].cast(cast_type).as(:group_updated_at),
 
           Sequel.lit(%[0 as "role_id"]),          # Sequel[:roles][:id].as(:role_id),
           Sequel::NULL.as(:role_name),            # Sequel[:roles][:name].as(:role_name),
