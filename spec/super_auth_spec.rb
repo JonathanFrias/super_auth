@@ -2031,6 +2031,273 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-014: ActiveRecord Path Strategy 1 - users <-> groups <-> roles <-> permissions <-> resources" do
+    it "basic flat case: user -> group -> role -> permission -> resource (no nesting) using AR models" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Alice')
+      group = SuperAuth::ActiveRecord::Group.create(name: 'Engineering')
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Developer')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'read')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'codebase')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Alice'
+      expect(edge[:group_name]).to eq 'Engineering'
+      expect(edge[:role_name]).to eq 'Developer'
+      expect(edge[:permission_name]).to eq 'read'
+      expect(edge[:resource_name]).to eq 'codebase'
+    end
+
+    it "nested groups: user in child group, role linked to parent group, permission propagates down" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Bob')
+      parent_group = SuperAuth::ActiveRecord::Group.create(name: 'Company')
+      child_group = SuperAuth::ActiveRecord::Group.create(name: 'Engineering', parent: parent_group)
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Viewer')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'view')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'dashboard')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: child_group.id)
+      SuperAuth::Edge.create(group_id: parent_group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Bob'
+      expect(edge[:group_name]).to eq 'Engineering'
+      expect(edge[:role_name]).to eq 'Viewer'
+      expect(edge[:permission_name]).to eq 'view'
+      expect(edge[:resource_name]).to eq 'dashboard'
+    end
+
+    it "nested roles: user -> group -> parent_role, permission on child_role propagates" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Charlie')
+      group = SuperAuth::ActiveRecord::Group.create(name: 'Team')
+      parent_role = SuperAuth::ActiveRecord::Role.create(name: 'Manager')
+      child_role = SuperAuth::ActiveRecord::Role.create(name: 'Lead', parent: parent_role)
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'approve')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'requests')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: parent_role.id)
+      SuperAuth::Edge.create(role_id: child_role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Charlie'
+      expect(edge[:group_name]).to eq 'Team'
+      expect(edge[:role_name]).to eq 'Lead'
+      expect(edge[:permission_name]).to eq 'approve'
+      expect(edge[:resource_name]).to eq 'requests'
+    end
+
+    it "both nested groups AND nested roles simultaneously" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Diana')
+      root_group = SuperAuth::ActiveRecord::Group.create(name: 'Corp')
+      child_group = SuperAuth::ActiveRecord::Group.create(name: 'Division', parent: root_group)
+      root_role = SuperAuth::ActiveRecord::Role.create(name: 'Staff')
+      child_role = SuperAuth::ActiveRecord::Role.create(name: 'Analyst', parent: root_role)
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'analyze')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'reports')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: child_group.id)
+      SuperAuth::Edge.create(group_id: root_group.id, role_id: root_role.id)
+      SuperAuth::Edge.create(role_id: child_role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Diana'
+      expect(edge[:group_name]).to eq 'Division'
+      expect(edge[:role_name]).to eq 'Analyst'
+      expect(edge[:permission_name]).to eq 'analyze'
+      expect(edge[:resource_name]).to eq 'reports'
+    end
+
+    it "deeply nested groups (3+ levels): user at leaf group still gets authorization" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Eve')
+      g1 = SuperAuth::ActiveRecord::Group.create(name: 'Org')
+      g2 = SuperAuth::ActiveRecord::Group.create(name: 'Dept', parent: g1)
+      g3 = SuperAuth::ActiveRecord::Group.create(name: 'Team', parent: g2)
+      g4 = SuperAuth::ActiveRecord::Group.create(name: 'Squad', parent: g3)
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Worker')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'execute')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'pipeline')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: g4.id)
+      SuperAuth::Edge.create(group_id: g1.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Eve'
+      expect(edge[:group_name]).to eq 'Squad'
+      expect(edge[:permission_name]).to eq 'execute'
+      expect(edge[:resource_name]).to eq 'pipeline'
+    end
+
+    it "deeply nested roles (3+ levels): permissions propagate correctly" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Frank')
+      group = SuperAuth::ActiveRecord::Group.create(name: 'Ops')
+      r1 = SuperAuth::ActiveRecord::Role.create(name: 'Base')
+      r2 = SuperAuth::ActiveRecord::Role.create(name: 'Mid', parent: r1)
+      r3 = SuperAuth::ActiveRecord::Role.create(name: 'Senior', parent: r2)
+      r4 = SuperAuth::ActiveRecord::Role.create(name: 'Principal', parent: r3)
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'deploy')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'production')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: r1.id)
+      SuperAuth::Edge.create(role_id: r4.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Frank'
+      expect(edge[:group_name]).to eq 'Ops'
+      expect(edge[:role_name]).to eq 'Principal'
+      expect(edge[:permission_name]).to eq 'deploy'
+      expect(edge[:resource_name]).to eq 'production'
+    end
+
+    it "multiple users in different groups all get authorized to the same resource" do
+      user1 = SuperAuth::ActiveRecord::User.create(name: 'User1')
+      user2 = SuperAuth::ActiveRecord::User.create(name: 'User2')
+      user3 = SuperAuth::ActiveRecord::User.create(name: 'User3')
+      root_group = SuperAuth::ActiveRecord::Group.create(name: 'HQ')
+      group_a = SuperAuth::ActiveRecord::Group.create(name: 'Sales', parent: root_group)
+      group_b = SuperAuth::ActiveRecord::Group.create(name: 'Support', parent: root_group)
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Agent')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'access')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'crm')
+
+      SuperAuth::Edge.create(user_id: user1.id, group_id: root_group.id)
+      SuperAuth::Edge.create(user_id: user2.id, group_id: group_a.id)
+      SuperAuth::Edge.create(user_id: user3.id, group_id: group_b.id)
+      SuperAuth::Edge.create(group_id: root_group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      user_names = edges.map { |e| e[:user_name] }.sort
+      expect(user_names).to eq ['User1', 'User2', 'User3']
+
+      edges.each do |edge|
+        expect(edge[:role_name]).to eq 'Agent'
+        expect(edge[:permission_name]).to eq 'access'
+        expect(edge[:resource_name]).to eq 'crm'
+      end
+    end
+
+    it "user in an unrelated group does NOT get authorized" do
+      user_authorized = SuperAuth::ActiveRecord::User.create(name: 'Insider')
+      user_unauthorized = SuperAuth::ActiveRecord::User.create(name: 'Outsider')
+      group_a = SuperAuth::ActiveRecord::Group.create(name: 'Alpha')
+      group_b = SuperAuth::ActiveRecord::Group.create(name: 'Beta')
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Operator')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'operate')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'machine')
+
+      SuperAuth::Edge.create(user_id: user_authorized.id, group_id: group_a.id)
+      SuperAuth::Edge.create(user_id: user_unauthorized.id, group_id: group_b.id)
+      SuperAuth::Edge.create(group_id: group_a.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+      expect(edges.first[:user_name]).to eq 'Insider'
+    end
+
+    it "multiple permissions on the same role->resource path produce multiple authorization records" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Grace')
+      group = SuperAuth::ActiveRecord::Group.create(name: 'Admin')
+      role = SuperAuth::ActiveRecord::Role.create(name: 'SuperAdmin')
+      perm_read = SuperAuth::ActiveRecord::Permission.create(name: 'read')
+      perm_write = SuperAuth::ActiveRecord::Permission.create(name: 'write')
+      perm_delete = SuperAuth::ActiveRecord::Permission.create(name: 'delete')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'database')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: perm_read.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: perm_write.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: perm_delete.id)
+      SuperAuth::Edge.create(permission_id: perm_read.id, resource_id: resource.id)
+      SuperAuth::Edge.create(permission_id: perm_write.id, resource_id: resource.id)
+      SuperAuth::Edge.create(permission_id: perm_delete.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 3
+
+      permission_names = edges.map { |e| e[:permission_name] }.sort
+      expect(permission_names).to eq ['delete', 'read', 'write']
+
+      edges.each do |edge|
+        expect(edge[:user_name]).to eq 'Grace'
+        expect(edge[:group_name]).to eq 'Admin'
+        expect(edge[:role_name]).to eq 'SuperAdmin'
+        expect(edge[:resource_name]).to eq 'database'
+      end
+    end
+
+    it "result includes correct user_name, group_name, group_path, group_name_path, role_name, role_path, role_name_path, permission_name, resource_name" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Hank', external_id: 'ext-1', external_type: 'ldap')
+      root_group = SuperAuth::ActiveRecord::Group.create(name: 'Corp')
+      child_group = SuperAuth::ActiveRecord::Group.create(name: 'IT', parent: root_group)
+      root_role = SuperAuth::ActiveRecord::Role.create(name: 'Staff')
+      child_role = SuperAuth::ActiveRecord::Role.create(name: 'SysAdmin', parent: root_role)
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'manage')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'servers', external_id: 'srv-1', external_type: 'aws')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: child_group.id)
+      SuperAuth::Edge.create(group_id: root_group.id, role_id: root_role.id)
+      SuperAuth::Edge.create(role_id: child_role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Hank'
+      expect(edge[:user_external_id]).to eq 'ext-1'
+      expect(edge[:user_external_type]).to eq 'ldap'
+
+      expect(edge[:group_name]).to eq 'IT'
+      expect(edge[:group_path]).to eq "#{root_group.id},#{child_group.id}"
+      expect(edge[:group_name_path]).to eq 'Corp,IT'
+
+      expect(edge[:role_name]).to eq 'SysAdmin'
+      expect(edge[:role_path]).to eq "#{root_role.id},#{child_role.id}"
+      expect(edge[:role_name_path]).to eq 'Staff,SysAdmin'
+
+      expect(edge[:permission_name]).to eq 'manage'
+
+      expect(edge[:resource_name]).to eq 'servers'
+      expect(edge[:resource_external_id]).to eq 'srv-1'
+      expect(edge[:resource_external_type]).to eq 'aws'
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
