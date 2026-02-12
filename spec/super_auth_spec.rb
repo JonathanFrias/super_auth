@@ -2736,6 +2736,102 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-018: ActiveRecord Path Strategy 5 - users <-> resources" do
+    it "basic case: user -> resource using AR models" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Alice')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'codebase')
+
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:user_name]).to eq 'Alice'
+      expect(edge[:resource_name]).to eq 'codebase'
+    end
+
+    it "group, role, and permission fields are NULL/0 in the result" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'Bob')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'dashboard')
+
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(edges.length).to eq 1
+
+      edge = edges.first
+      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_name]).to be_nil
+      expect(edge[:group_path]).to be_nil
+      expect(edge[:group_name_path]).to be_nil
+      expect(edge[:group_parent_id]).to eq 0
+
+      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_name]).to be_nil
+      expect(edge[:role_path]).to be_nil
+      expect(edge[:role_name_path]).to be_nil
+      expect(edge[:role_parent_id]).to eq 0
+
+      expect(edge[:permission_id]).to eq 0
+      expect(edge[:permission_name]).to be_nil
+    end
+
+    it "user with no edge to the resource does NOT get authorized" do
+      user_authorized = SuperAuth::ActiveRecord::User.create(name: 'Insider')
+      _user_unauthorized = SuperAuth::ActiveRecord::User.create(name: 'Outsider')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'secret')
+
+      SuperAuth::Edge.create(user_id: user_authorized.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(edges.length).to eq 1
+      expect(edges.first[:user_name]).to eq 'Insider'
+    end
+
+    it "multiple users each with direct access to the same resource" do
+      user1 = SuperAuth::ActiveRecord::User.create(name: 'User1')
+      user2 = SuperAuth::ActiveRecord::User.create(name: 'User2')
+      user3 = SuperAuth::ActiveRecord::User.create(name: 'User3')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'shared-doc')
+
+      SuperAuth::Edge.create(user_id: user1.id, resource_id: resource.id)
+      SuperAuth::Edge.create(user_id: user2.id, resource_id: resource.id)
+      SuperAuth::Edge.create(user_id: user3.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(edges.length).to eq 3
+
+      user_names = edges.map { |e| e[:user_name] }.sort
+      expect(user_names).to eq ['User1', 'User2', 'User3']
+
+      edges.each do |edge|
+        expect(edge[:resource_name]).to eq 'shared-doc'
+      end
+    end
+
+    it "one user with direct access to multiple resources" do
+      user = SuperAuth::ActiveRecord::User.create(name: 'PowerUser')
+      resource1 = SuperAuth::ActiveRecord::Resource.create(name: 'database')
+      resource2 = SuperAuth::ActiveRecord::Resource.create(name: 'server')
+      resource3 = SuperAuth::ActiveRecord::Resource.create(name: 'storage')
+
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource1.id)
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource2.id)
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource3.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(edges.length).to eq 3
+
+      resource_names = edges.map { |e| e[:resource_name] }.sort
+      expect(resource_names).to eq ['database', 'server', 'storage']
+
+      edges.each do |edge|
+        expect(edge[:user_name]).to eq 'PowerUser'
+      end
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
