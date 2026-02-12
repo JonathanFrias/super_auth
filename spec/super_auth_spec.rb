@@ -1068,6 +1068,278 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-008: Combined `authorizations` Method (Union of All Strategies)" do
+    it "user with only a direct resource edge appears in authorizations" do
+      user = SuperAuth::User.create(name: 'DirectUser')
+      resource = SuperAuth::Resource.create(name: 'file')
+
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'DirectUser'
+      expect(auth[:resource_name]).to eq 'file'
+    end
+
+    it "user with only a permission->resource path appears in authorizations" do
+      user = SuperAuth::User.create(name: 'PermUser')
+      permission = SuperAuth::Permission.create(name: 'read')
+      resource = SuperAuth::Resource.create(name: 'doc')
+
+      SuperAuth::Edge.create(user: user, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'PermUser'
+      expect(auth[:permission_name]).to eq 'read'
+      expect(auth[:resource_name]).to eq 'doc'
+    end
+
+    it "user with only a group->permission->resource path appears in authorizations" do
+      user = SuperAuth::User.create(name: 'GroupPermUser')
+      group = SuperAuth::Group.create(name: 'Team')
+      permission = SuperAuth::Permission.create(name: 'edit')
+      resource = SuperAuth::Resource.create(name: 'wiki')
+
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'GroupPermUser'
+      expect(auth[:group_name]).to eq 'Team'
+      expect(auth[:permission_name]).to eq 'edit'
+      expect(auth[:resource_name]).to eq 'wiki'
+    end
+
+    it "user with only a role->permission->resource path appears in authorizations" do
+      user = SuperAuth::User.create(name: 'RolePermUser')
+      role = SuperAuth::Role.create(name: 'Admin')
+      permission = SuperAuth::Permission.create(name: 'manage')
+      resource = SuperAuth::Resource.create(name: 'settings')
+
+      SuperAuth::Edge.create(user: user, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'RolePermUser'
+      expect(auth[:role_name]).to eq 'Admin'
+      expect(auth[:permission_name]).to eq 'manage'
+      expect(auth[:resource_name]).to eq 'settings'
+    end
+
+    it "user with only a group->role->permission->resource path appears in authorizations" do
+      user = SuperAuth::User.create(name: 'FullPathUser')
+      group = SuperAuth::Group.create(name: 'Engineering')
+      role = SuperAuth::Role.create(name: 'Developer')
+      permission = SuperAuth::Permission.create(name: 'deploy')
+      resource = SuperAuth::Resource.create(name: 'production')
+
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'FullPathUser'
+      expect(auth[:group_name]).to eq 'Engineering'
+      expect(auth[:role_name]).to eq 'Developer'
+      expect(auth[:permission_name]).to eq 'deploy'
+      expect(auth[:resource_name]).to eq 'production'
+    end
+
+    it "user with multiple different path types to the same resource gets all of them in authorizations" do
+      user = SuperAuth::User.create(name: 'MultiPathUser')
+      resource = SuperAuth::Resource.create(name: 'api')
+      group = SuperAuth::Group.create(name: 'Ops')
+      role = SuperAuth::Role.create(name: 'Operator')
+      perm_direct = SuperAuth::Permission.create(name: 'direct_access')
+      perm_group = SuperAuth::Permission.create(name: 'group_access')
+      perm_role = SuperAuth::Permission.create(name: 'role_access')
+      perm_grp_role = SuperAuth::Permission.create(name: 'grp_role_access')
+
+      # Path 1: user -> resource (direct)
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      # Path 2: user -> permission -> resource
+      SuperAuth::Edge.create(user: user, permission: perm_direct)
+      SuperAuth::Edge.create(permission: perm_direct, resource: resource)
+
+      # Path 3: user -> group -> permission -> resource
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, permission: perm_group)
+      SuperAuth::Edge.create(permission: perm_group, resource: resource)
+
+      # Path 4: user -> role -> permission -> resource
+      SuperAuth::Edge.create(user: user, role: role)
+      SuperAuth::Edge.create(role: role, permission: perm_role)
+      SuperAuth::Edge.create(permission: perm_role, resource: resource)
+
+      # Path 5: user -> group -> role -> permission -> resource
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: perm_grp_role)
+      SuperAuth::Edge.create(permission: perm_grp_role, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      # Should have at least one record from each of the 5 path types
+      # Path 1: 1 record (direct)
+      # Path 2: 1 record (user->perm_direct->resource)
+      # Path 3: 1 record (user->group->perm_group->resource)
+      # Path 4: role_access and grp_role_access via role (user->role->perm_role->resource, user->role->perm_grp_role->resource)
+      # Path 5: group->role gives role_access and grp_role_access (user->group->role->perm_role->resource, user->group->role->perm_grp_role->resource)
+      # Total varies based on how the union deduplicates, but we should have multiple paths
+      expect(auths.length).to be >= 5
+
+      resource_names = auths.map { |a| a[:resource_name] }.uniq
+      expect(resource_names).to eq ['api']
+
+      user_names = auths.map { |a| a[:user_name] }.uniq
+      expect(user_names).to eq ['MultiPathUser']
+    end
+
+    it "user with NO edges returns zero authorization records" do
+      _user = SuperAuth::User.create(name: 'NoEdgeUser')
+      _resource = SuperAuth::Resource.create(name: 'forbidden')
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "results from different strategies have compatible column shapes (union doesn't break)" do
+      # Set up one path from each strategy and verify the union produces results
+      # with consistent columns
+      user1 = SuperAuth::User.create(name: 'User1')
+      user2 = SuperAuth::User.create(name: 'User2')
+      user3 = SuperAuth::User.create(name: 'User3')
+      user4 = SuperAuth::User.create(name: 'User4')
+      user5 = SuperAuth::User.create(name: 'User5')
+      group = SuperAuth::Group.create(name: 'Grp')
+      role = SuperAuth::Role.create(name: 'Rl')
+      perm1 = SuperAuth::Permission.create(name: 'p1')
+      perm2 = SuperAuth::Permission.create(name: 'p2')
+      perm3 = SuperAuth::Permission.create(name: 'p3')
+      perm4 = SuperAuth::Permission.create(name: 'p4')
+      res1 = SuperAuth::Resource.create(name: 'r1')
+      res2 = SuperAuth::Resource.create(name: 'r2')
+      res3 = SuperAuth::Resource.create(name: 'r3')
+      res4 = SuperAuth::Resource.create(name: 'r4')
+      res5 = SuperAuth::Resource.create(name: 'r5')
+
+      # Strategy 5: user -> resource
+      SuperAuth::Edge.create(user: user1, resource: res1)
+
+      # Strategy 4: user -> permission -> resource
+      SuperAuth::Edge.create(user: user2, permission: perm1)
+      SuperAuth::Edge.create(permission: perm1, resource: res2)
+
+      # Strategy 3: user -> group -> permission -> resource
+      SuperAuth::Edge.create(user: user3, group: group)
+      SuperAuth::Edge.create(group: group, permission: perm2)
+      SuperAuth::Edge.create(permission: perm2, resource: res3)
+
+      # Strategy 2: user -> role -> permission -> resource
+      SuperAuth::Edge.create(user: user4, role: role)
+      SuperAuth::Edge.create(role: role, permission: perm3)
+      SuperAuth::Edge.create(permission: perm3, resource: res4)
+
+      # Strategy 1: user -> group -> role -> permission -> resource
+      SuperAuth::Edge.create(user: user5, group: group)
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: perm4)
+      SuperAuth::Edge.create(permission: perm4, resource: res5)
+
+      auths = SuperAuth::Edge.authorizations.all
+
+      # All records should have the same set of keys
+      expected_keys = [:user_id, :user_name, :resource_id, :resource_name]
+      auths.each do |auth|
+        expected_keys.each do |key|
+          expect(auth.keys).to include(key), "Expected key #{key} to be present in authorization record"
+        end
+      end
+
+      # Each user should appear with their respective resource
+      user_resource_pairs = auths.map { |a| [a[:user_name], a[:resource_name]] }
+      expect(user_resource_pairs).to include(['User1', 'r1'])
+      expect(user_resource_pairs).to include(['User2', 'r2'])
+      expect(user_resource_pairs).to include(['User3', 'r3'])
+      expect(user_resource_pairs).to include(['User4', 'r4'])
+      expect(user_resource_pairs).to include(['User5', 'r5'])
+    end
+
+    it "complex scenario with multiple users, groups, roles, permissions, and resources" do
+      # Setup: 3 users, 2 groups (nested), 2 roles, 3 permissions, 2 resources
+      alice = SuperAuth::User.create(name: 'Alice')
+      bob = SuperAuth::User.create(name: 'Bob')
+      charlie = SuperAuth::User.create(name: 'Charlie')
+
+      corp = SuperAuth::Group.create(name: 'Corp')
+      eng = SuperAuth::Group.create(name: 'Engineering', parent: corp)
+
+      admin_role = SuperAuth::Role.create(name: 'Admin')
+      viewer_role = SuperAuth::Role.create(name: 'Viewer')
+
+      read_perm = SuperAuth::Permission.create(name: 'read')
+      write_perm = SuperAuth::Permission.create(name: 'write')
+      delete_perm = SuperAuth::Permission.create(name: 'delete')
+
+      database = SuperAuth::Resource.create(name: 'database')
+      server = SuperAuth::Resource.create(name: 'server')
+
+      # Alice: direct access to database (Strategy 5)
+      SuperAuth::Edge.create(user: alice, resource: database)
+
+      # Bob: group -> role -> permission -> resource (Strategy 1)
+      SuperAuth::Edge.create(user: bob, group: eng)
+      SuperAuth::Edge.create(group: corp, role: admin_role)
+      SuperAuth::Edge.create(role: admin_role, permission: write_perm)
+      SuperAuth::Edge.create(permission: write_perm, resource: server)
+
+      # Charlie: permission -> resource (Strategy 4)
+      SuperAuth::Edge.create(user: charlie, permission: read_perm)
+      SuperAuth::Edge.create(permission: read_perm, resource: database)
+
+      auths = SuperAuth::Edge.authorizations.all
+
+      # Alice should have 1 authorization (direct to database)
+      alice_auths = auths.select { |a| a[:user_name] == 'Alice' }
+      expect(alice_auths.length).to eq 1
+      expect(alice_auths.first[:resource_name]).to eq 'database'
+
+      # Bob should have 1 authorization (group->role->permission->resource)
+      bob_auths = auths.select { |a| a[:user_name] == 'Bob' }
+      expect(bob_auths.length).to eq 1
+      expect(bob_auths.first[:resource_name]).to eq 'server'
+      expect(bob_auths.first[:group_name]).to eq 'Engineering'
+      expect(bob_auths.first[:role_name]).to eq 'Admin'
+      expect(bob_auths.first[:permission_name]).to eq 'write'
+
+      # Charlie should have 1 authorization (permission->resource)
+      charlie_auths = auths.select { |a| a[:user_name] == 'Charlie' }
+      expect(charlie_auths.length).to eq 1
+      expect(charlie_auths.first[:resource_name]).to eq 'database'
+      expect(charlie_auths.first[:permission_name]).to eq 'read'
+
+      # Total should be 3
+      expect(auths.length).to eq 3
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
