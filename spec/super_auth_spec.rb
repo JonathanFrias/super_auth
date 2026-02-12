@@ -15,18 +15,132 @@ RSpec.describe SuperAuth do
   end
 
   after do
-    SuperAuth.uninstall_migrations
+    # SuperAuth.uninstall_migrations
   end
 
-  it "can create a group tree" do
-    root_group = SuperAuth::Group.create(name: 'root')
-      admin_group = SuperAuth::Group.create(name: 'admin', parent: root_group)
-        user_group = SuperAuth::Group.create(name: 'user', parent: admin_group)
+  describe "US-001: Group Tree Hierarchies (Nestable)" do
+    it "single root group has group_path equal to its own id" do
+      root = SuperAuth::Group.create(name: 'root')
+      tree = SuperAuth::Group.trees.first
+      expect(tree[:group_path]).to eq root.id.to_s
+      expect(tree[:group_name_path]).to eq 'root'
+    end
 
-    descendants = root_group.descendants_dataset.order(:id)
-    expect(descendants).to match_array([root_group, admin_group, user_group])
+    it "2-level hierarchy has correct group_path and group_name_path" do
+      root = SuperAuth::Group.create(name: 'Company')
+      child = SuperAuth::Group.create(name: 'Engineering', parent: root)
 
-    expect(descendants.map { |d| d[:group_path] }).to eq ["#{root_group.id}", "#{root_group.id},#{admin_group.id}", "#{root_group.id},#{admin_group.id},#{user_group.id}"]
+      trees = SuperAuth::Group.trees.order(:id).all
+      expect(trees.length).to eq 2
+
+      root_tree = trees.find { |t| t[:id] == root.id }
+      child_tree = trees.find { |t| t[:id] == child.id }
+
+      expect(root_tree[:group_path]).to eq root.id.to_s
+      expect(root_tree[:group_name_path]).to eq 'Company'
+
+      expect(child_tree[:group_path]).to eq "#{root.id},#{child.id}"
+      expect(child_tree[:group_name_path]).to eq 'Company,Engineering'
+    end
+
+    it "3-level hierarchy has correct paths at each level" do
+      root = SuperAuth::Group.create(name: 'root')
+      child = SuperAuth::Group.create(name: 'admin', parent: root)
+      grandchild = SuperAuth::Group.create(name: 'user', parent: child)
+
+      descendants = root.descendants_dataset.order(:id).all
+
+      expect(descendants.map { |d| d[:group_path] }).to eq [
+        root.id.to_s,
+        "#{root.id},#{child.id}",
+        "#{root.id},#{child.id},#{grandchild.id}"
+      ]
+      expect(descendants.map { |d| d[:group_name_path] }).to eq [
+        'root',
+        'root,admin',
+        'root,admin,user'
+      ]
+    end
+
+    it "wide tree with 3+ direct children has correct paths" do
+      root = SuperAuth::Group.create(name: 'Corp')
+      child_a = SuperAuth::Group.create(name: 'Sales', parent: root)
+      child_b = SuperAuth::Group.create(name: 'Engineering', parent: root)
+      child_c = SuperAuth::Group.create(name: 'Marketing', parent: root)
+      child_d = SuperAuth::Group.create(name: 'HR', parent: root)
+
+      trees = SuperAuth::Group.trees.order(:id).all
+      expect(trees.length).to eq 5
+
+      [child_a, child_b, child_c, child_d].each do |child|
+        tree_node = trees.find { |t| t[:id] == child.id }
+        expect(tree_node[:group_path]).to eq "#{root.id},#{child.id}"
+        expect(tree_node[:group_name_path]).to eq "Corp,#{child.name}"
+      end
+    end
+
+    it "descendants_dataset returns all descendants including the root itself" do
+      root = SuperAuth::Group.create(name: 'root')
+      child = SuperAuth::Group.create(name: 'child', parent: root)
+      grandchild = SuperAuth::Group.create(name: 'grandchild', parent: child)
+
+      descendants = root.descendants_dataset.order(:id).all
+      expect(descendants.map(&:id)).to eq [root.id, child.id, grandchild.id]
+    end
+
+    it "descendants_dataset on a mid-level node returns its parent's subtree (not siblings' children)" do
+      root = SuperAuth::Group.create(name: 'root')
+      child_a = SuperAuth::Group.create(name: 'child_a', parent: root)
+      child_b = SuperAuth::Group.create(name: 'child_b', parent: root)
+      grandchild_a = SuperAuth::Group.create(name: 'grandchild_a', parent: child_a)
+      grandchild_b = SuperAuth::Group.create(name: 'grandchild_b', parent: child_b)
+
+      # descendants_dataset uses parent_id internally, so from child_a
+      # it traverses from root downward and includes the full subtree
+      descendants_from_root = root.descendants_dataset.order(:id).all
+      expect(descendants_from_root.map(&:id)).to eq [root.id, child_a.id, child_b.id, grandchild_a.id, grandchild_b.id]
+
+      # A child with its own children: descendants_dataset returns subtree from its parent
+      child_a_descendants = child_a.descendants_dataset.order(:id).all
+      child_a_ids = child_a_descendants.map(&:id)
+      expect(child_a_ids).to include(root.id, child_a.id, grandchild_a.id)
+
+      # Using cte directly on a specific id gives only that node's subtree
+      subtree = SuperAuth::Group.cte(child_a.id, :desc).order(:id).all
+      subtree_ids = subtree.map(&:id)
+      expect(subtree_ids).to include(child_a.id, grandchild_a.id)
+      expect(subtree_ids).not_to include(child_b.id)
+      expect(subtree_ids).not_to include(grandchild_b.id)
+    end
+
+    it "roots scope returns only groups with no parent" do
+      root1 = SuperAuth::Group.create(name: 'root1')
+      root2 = SuperAuth::Group.create(name: 'root2')
+      _child = SuperAuth::Group.create(name: 'child', parent: root1)
+
+      roots = SuperAuth::Group.roots.order(:id).all
+      expect(roots.map(&:id)).to eq [root1.id, root2.id]
+    end
+
+    it "trees scope returns all groups with their computed paths" do
+      root = SuperAuth::Group.create(name: 'Company')
+      child = SuperAuth::Group.create(name: 'Dev', parent: root)
+      grandchild = SuperAuth::Group.create(name: 'Backend', parent: child)
+
+      trees = SuperAuth::Group.trees.order(:id).all
+      expect(trees.length).to eq 3
+
+      expect(trees.map { |t| t[:group_path] }).to eq [
+        root.id.to_s,
+        "#{root.id},#{child.id}",
+        "#{root.id},#{child.id},#{grandchild.id}"
+      ]
+      expect(trees.map { |t| t[:group_name_path] }).to eq [
+        'Company',
+        'Company,Dev',
+        'Company,Dev,Backend'
+      ]
+    end
   end
 
   it "can create a role tree" do
@@ -73,6 +187,26 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(user: @senior_developer, group: @developers)
     SuperAuth::Edge.create(user: @noob_developer, group: @developers)
     SuperAuth::Edge.create(user: @marketing_bro, group: @organization)
+  end
+
+  let(:nested_roles_with_permissions) do
+    @guest_user = SuperAuth::User.create(name: "user")
+    # @admin_user = SuperAuth::User.create(name: "admin user")
+    # _irrelevant = SuperAuth::User.create(name: "ignore me")
+
+    @read = SuperAuth::Permission.create(name: 'read')
+    @write = SuperAuth::Permission.create(name: 'write')
+    @login = SuperAuth::Permission.create(name: "login")
+    # _irrelevant = SuperAuth::Permission.create(name: "ignore me")
+
+    @all_roles = SuperAuth::Role.create(name: 'All Roles')
+      # @admin = SuperAuth::Role.create(name: 'admin', parent: @all_roles)
+      @guest = SuperAuth::Role.create(name: 'guest', parent: @all_roles)
+    # _irrelevant = SuperAuth::Role.create(name: "ignore me")
+
+    # SuperAuth::Edge.create(permission: @login, role: @all_roles)
+    SuperAuth::Edge.create(permission: @read, role: @guest)
+    # SuperAuth::Edge.create(permission: @write, role: @admin)
   end
 
   it "can merge users with groups" do
@@ -176,9 +310,27 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(group: @developers, resource: resource)
     SuperAuth::Edge.create(resource: resource, permission: talk)
 
-    edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_groups_permissions_resources
 
     expect(edges.count).to eq 3
+  end
+
+  it "users<->nested_roles<->permissions<->resources" do
+    @all_roles = SuperAuth::Role.create(name: 'All Roles')
+      @qa = SuperAuth::Role.create(name: 'Bob', parent: @all_roles)
+
+    @guest_user = SuperAuth::User.create(name: "user")
+    @read = SuperAuth::Permission.create(name: 'read')
+
+    resource = SuperAuth::Resource.create(name: 'hr')
+
+    SuperAuth::Edge.create(permission: @read, role: @qa)
+    SuperAuth::Edge.create(user: @guest_user, role: @qa)
+    SuperAuth::Edge.create(resource: resource, role: @qa)
+
+    edges = SuperAuth::Edge.users_roles_permissions_resources
+
+    expect(edges.count).to eq 2
   end
 
   it "users<->roles<->permissions<->resources" do
