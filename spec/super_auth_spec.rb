@@ -3248,6 +3248,128 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-021: ActiveRecord User.with_groups and Permission.with_roles Merge Queries" do
+    it "SuperAuth::ActiveRecord::User.with_groups returns users joined with their group hierarchy paths as an AR relation" do
+      user1 = SuperAuth::ActiveRecord::User.create!(name: 'Alice')
+      user2 = SuperAuth::ActiveRecord::User.create!(name: 'Bob')
+      group1 = SuperAuth::ActiveRecord::Group.create!(name: 'Engineering')
+      group2 = SuperAuth::ActiveRecord::Group.create!(name: 'Marketing')
+
+      SuperAuth::Edge.create(user_id: user1.id, group_id: group1.id)
+      SuperAuth::Edge.create(user_id: user2.id, group_id: group2.id)
+
+      results = SuperAuth::ActiveRecord::User.with_groups.order(:user_id).to_a
+      expect(results.length).to eq 2
+
+      alice_result = results.find { |r| r[:user_id] == user1.id }
+      bob_result = results.find { |r| r[:user_id] == user2.id }
+
+      expect(alice_result[:user_name]).to eq 'Alice'
+      expect(alice_result[:group_name]).to eq 'Engineering'
+      expect(alice_result[:group_id]).to eq group1.id
+      expect(alice_result[:group_path]).to eq group1.id.to_s
+      expect(alice_result[:group_name_path]).to eq 'Engineering'
+
+      expect(bob_result[:user_name]).to eq 'Bob'
+      expect(bob_result[:group_name]).to eq 'Marketing'
+      expect(bob_result[:group_id]).to eq group2.id
+      expect(bob_result[:group_path]).to eq group2.id.to_s
+      expect(bob_result[:group_name_path]).to eq 'Marketing'
+    end
+
+    it "SuperAuth::ActiveRecord::User.with_groups with nested groups returns correct group_path and group_name_path" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Charlie')
+      root_group = SuperAuth::ActiveRecord::Group.create!(name: 'Corp')
+      child_group = SuperAuth::ActiveRecord::Group.create!(name: 'Engineering', parent_id: root_group.id)
+      grandchild_group = SuperAuth::ActiveRecord::Group.create!(name: 'Backend', parent_id: child_group.id)
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: grandchild_group.id)
+
+      results = SuperAuth::ActiveRecord::User.with_groups.to_a
+      expect(results.length).to eq 1
+
+      result = results.first
+      expect(result[:user_name]).to eq 'Charlie'
+      expect(result[:group_name]).to eq 'Backend'
+      expect(result[:group_id]).to eq grandchild_group.id
+      expect(result[:group_path]).to eq "#{root_group.id},#{child_group.id},#{grandchild_group.id}"
+      expect(result[:group_name_path]).to eq 'Corp,Engineering,Backend'
+      expect(result[:parent_id]).to eq child_group.id
+    end
+
+    it "SuperAuth::ActiveRecord::User.with_groups excludes users with no group edges" do
+      user_with_group = SuperAuth::ActiveRecord::User.create!(name: 'HasGroup')
+      _user_without_group = SuperAuth::ActiveRecord::User.create!(name: 'NoGroup')
+      group = SuperAuth::ActiveRecord::Group.create!(name: 'Team')
+
+      SuperAuth::Edge.create(user_id: user_with_group.id, group_id: group.id)
+
+      results = SuperAuth::ActiveRecord::User.with_groups.to_a
+      expect(results.length).to eq 1
+      expect(results.first[:user_name]).to eq 'HasGroup'
+    end
+
+    it "SuperAuth::ActiveRecord::Permission.with_roles returns permissions joined with their role hierarchy paths as an AR relation" do
+      perm1 = SuperAuth::ActiveRecord::Permission.create!(name: 'read')
+      perm2 = SuperAuth::ActiveRecord::Permission.create!(name: 'write')
+      role1 = SuperAuth::ActiveRecord::Role.create!(name: 'Viewer')
+      role2 = SuperAuth::ActiveRecord::Role.create!(name: 'Editor')
+
+      SuperAuth::Edge.create(permission_id: perm1.id, role_id: role1.id)
+      SuperAuth::Edge.create(permission_id: perm2.id, role_id: role2.id)
+
+      results = SuperAuth::ActiveRecord::Permission.with_roles.order(:permission_id).to_a
+      expect(results.length).to eq 2
+
+      read_result = results.find { |r| r[:permission_id] == perm1.id }
+      write_result = results.find { |r| r[:permission_id] == perm2.id }
+
+      expect(read_result[:permission_name]).to eq 'read'
+      expect(read_result[:role_name]).to eq 'Viewer'
+      expect(read_result[:role_id]).to eq role1.id
+      expect(read_result[:role_path]).to eq role1.id.to_s
+      expect(read_result[:role_name_path]).to eq 'Viewer'
+
+      expect(write_result[:permission_name]).to eq 'write'
+      expect(write_result[:role_name]).to eq 'Editor'
+      expect(write_result[:role_id]).to eq role2.id
+      expect(write_result[:role_path]).to eq role2.id.to_s
+      expect(write_result[:role_name_path]).to eq 'Editor'
+    end
+
+    it "SuperAuth::ActiveRecord::Permission.with_roles with nested roles returns correct role_path and role_name_path" do
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'deploy')
+      root_role = SuperAuth::ActiveRecord::Role.create!(name: 'Staff')
+      child_role = SuperAuth::ActiveRecord::Role.create!(name: 'DevOps', parent_id: root_role.id)
+      grandchild_role = SuperAuth::ActiveRecord::Role.create!(name: 'SRE', parent_id: child_role.id)
+
+      SuperAuth::Edge.create(permission_id: permission.id, role_id: grandchild_role.id)
+
+      results = SuperAuth::ActiveRecord::Permission.with_roles.to_a
+      expect(results.length).to eq 1
+
+      result = results.first
+      expect(result[:permission_name]).to eq 'deploy'
+      expect(result[:role_name]).to eq 'SRE'
+      expect(result[:role_id]).to eq grandchild_role.id
+      expect(result[:role_path]).to eq "#{root_role.id},#{child_role.id},#{grandchild_role.id}"
+      expect(result[:role_name_path]).to eq 'Staff,DevOps,SRE'
+      expect(result[:parent_id]).to eq child_role.id
+    end
+
+    it "SuperAuth::ActiveRecord::Permission.with_roles excludes permissions with no role edges" do
+      perm_with_role = SuperAuth::ActiveRecord::Permission.create!(name: 'read')
+      _perm_without_role = SuperAuth::ActiveRecord::Permission.create!(name: 'write')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Viewer')
+
+      SuperAuth::Edge.create(permission_id: perm_with_role.id, role_id: role.id)
+
+      results = SuperAuth::ActiveRecord::Permission.with_roles.to_a
+      expect(results.length).to eq 1
+      expect(results.first[:permission_name]).to eq 'read'
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
