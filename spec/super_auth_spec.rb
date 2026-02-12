@@ -3095,6 +3095,159 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-020: ActiveRecord Edge Revocation and Authorization Lifecycle" do
+    it "deleting a user->group edge via AR removes all authorizations through that group" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Alice')
+      group = SuperAuth::ActiveRecord::Group.create!(name: 'Engineering')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Developer')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'read')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'codebase')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      # Verify authorization exists via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Alice'
+
+      # Delete the user->group edge
+      user_group_edge = SuperAuth::Edge.first(user_id: user.id, group_id: group.id)
+      user_group_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting a group->role edge via AR removes all authorizations through that group->role connection" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Bob')
+      group = SuperAuth::ActiveRecord::Group.create!(name: 'Ops')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Operator')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'execute')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'pipeline')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      group_role_edge = SuperAuth::Edge.create(group_id: group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      # Verify authorization exists via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+
+      # Delete the group->role edge
+      group_role_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting a role->permission edge via AR removes authorizations for that permission" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Charlie')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Admin')
+      perm_read = SuperAuth::ActiveRecord::Permission.create!(name: 'read')
+      perm_write = SuperAuth::ActiveRecord::Permission.create!(name: 'write')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'database')
+
+      SuperAuth::Edge.create(user_id: user.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: perm_read.id)
+      role_write_edge = SuperAuth::Edge.create(role_id: role.id, permission_id: perm_write.id)
+      SuperAuth::Edge.create(permission_id: perm_read.id, resource_id: resource.id)
+      SuperAuth::Edge.create(permission_id: perm_write.id, resource_id: resource.id)
+
+      # Both permissions should produce authorizations via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 2
+
+      # Delete the role->write permission edge
+      role_write_edge.destroy
+
+      # Only read permission authorization should remain
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:permission_name]).to eq 'read'
+    end
+
+    it "deleting a permission->resource edge via AR removes authorizations for that resource" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Diana')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'access')
+      resource1 = SuperAuth::ActiveRecord::Resource.create!(name: 'server')
+      resource2 = SuperAuth::ActiveRecord::Resource.create!(name: 'database')
+
+      SuperAuth::Edge.create(user_id: user.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource1.id)
+      perm_res2_edge = SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource2.id)
+
+      # Both resources should produce authorizations via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 2
+
+      # Delete the permission->database edge
+      perm_res2_edge.destroy
+
+      # Only server authorization should remain
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:resource_name]).to eq 'server'
+    end
+
+    it "deleting a user->resource direct edge via AR removes that authorization" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Eve')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'file')
+
+      direct_edge = SuperAuth::Edge.create(user_id: user.id, resource_id: resource.id)
+
+      # Verify direct authorization exists via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Eve'
+      expect(auths.first[:resource_name]).to eq 'file'
+
+      # Delete the direct user->resource edge
+      direct_edge.destroy
+
+      # Authorization should be gone
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "deleting an edge does NOT affect unrelated authorizations for other users" do
+      # Set up two users with completely independent authorization paths
+      alice = SuperAuth::ActiveRecord::User.create!(name: 'Alice')
+      bob = SuperAuth::ActiveRecord::User.create!(name: 'Bob')
+      group_a = SuperAuth::ActiveRecord::Group.create!(name: 'TeamA')
+      group_b = SuperAuth::ActiveRecord::Group.create!(name: 'TeamB')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Worker')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'work')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'project')
+
+      alice_edge = SuperAuth::Edge.create(user_id: alice.id, group_id: group_a.id)
+      SuperAuth::Edge.create(user_id: bob.id, group_id: group_b.id)
+      SuperAuth::Edge.create(group_id: group_a.id, role_id: role.id)
+      SuperAuth::Edge.create(group_id: group_b.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      # Both users should have authorizations via AR
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      user_names = auths.map { |a| a[:user_name] }.sort
+      expect(user_names).to eq ['Alice', 'Bob']
+
+      # Delete Alice's user->group edge
+      alice_edge.destroy
+
+      # Only Bob's authorization should remain
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Bob'
+      expect(auths.first[:resource_name]).to eq 'project'
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
