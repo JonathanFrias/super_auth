@@ -3370,6 +3370,166 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-022: ActiveRecord Edge Cases and Boundary Conditions" do
+    it "user belonging to multiple groups that each lead to the same resource via different paths using AR models" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'MultiGroupUser')
+      group_a = SuperAuth::ActiveRecord::Group.create!(name: 'Engineering')
+      group_b = SuperAuth::ActiveRecord::Group.create!(name: 'Operations')
+      role_a = SuperAuth::ActiveRecord::Role.create!(name: 'Developer')
+      role_b = SuperAuth::ActiveRecord::Role.create!(name: 'Operator')
+      perm_a = SuperAuth::ActiveRecord::Permission.create!(name: 'deploy')
+      perm_b = SuperAuth::ActiveRecord::Permission.create!(name: 'monitor')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'production')
+
+      # Path 1: user -> group_a -> role_a -> perm_a -> resource
+      SuperAuth::Edge.create(user_id: user.id, group_id: group_a.id)
+      SuperAuth::Edge.create(group_id: group_a.id, role_id: role_a.id)
+      SuperAuth::Edge.create(role_id: role_a.id, permission_id: perm_a.id)
+      SuperAuth::Edge.create(permission_id: perm_a.id, resource_id: resource.id)
+
+      # Path 2: user -> group_b -> role_b -> perm_b -> resource
+      SuperAuth::Edge.create(user_id: user.id, group_id: group_b.id)
+      SuperAuth::Edge.create(group_id: group_b.id, role_id: role_b.id)
+      SuperAuth::Edge.create(role_id: role_b.id, permission_id: perm_b.id)
+      SuperAuth::Edge.create(permission_id: perm_b.id, resource_id: resource.id)
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      user_auths = auths.select { |a| a[:user_name] == 'MultiGroupUser' }
+
+      # Should have at least 2 records (one per path through different groups)
+      expect(user_auths.length).to be >= 2
+
+      # All point to the same resource
+      user_auths.each do |auth|
+        expect(auth[:resource_name]).to eq 'production'
+      end
+
+      # Both groups should appear
+      group_names = user_auths.map { |a| a[:group_name] }.uniq.sort
+      expect(group_names).to eq ['Engineering', 'Operations']
+    end
+
+    it "group with no users linked produces no authorizations via AR" do
+      _group = SuperAuth::ActiveRecord::Group.create!(name: 'EmptyGroup')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Admin')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'manage')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'settings')
+
+      SuperAuth::Edge.create(group_id: _group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "role with no groups or users linked produces no authorizations via AR" do
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'OrphanRole')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'execute')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'pipeline')
+
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "permission linked to a role but no resource produces no authorizations via AR" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Alice')
+      role = SuperAuth::ActiveRecord::Role.create!(name: 'Developer')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'code_review')
+
+      SuperAuth::Edge.create(user_id: user.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      # No permission -> resource edge
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 0
+    end
+
+    it "resource with no permission edges produces no authorizations (except direct user->resource) via AR" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Bob')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'isolated-file')
+      _orphan_resource = SuperAuth::ActiveRecord::Resource.create!(name: 'orphan-resource')
+
+      # Only direct user -> resource edge (no permission edges to either resource)
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource.id)
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Bob'
+      expect(auths.first[:resource_name]).to eq 'isolated-file'
+
+      # The orphan resource with no edges at all should not appear
+      resource_names = auths.map { |a| a[:resource_name] }
+      expect(resource_names).not_to include('orphan-resource')
+    end
+
+    it "names with special characters (spaces, unicode, commas, quotes) via AR" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'Señor Developer')
+      group = SuperAuth::ActiveRecord::Group.create!(name: 'R&D, Innovation')
+      role = SuperAuth::ActiveRecord::Role.create!(name: "Lead's Team")
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'café access')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'Ürban Döcument')
+
+      SuperAuth::Edge.create(user_id: user.id, group_id: group.id)
+      SuperAuth::Edge.create(group_id: group.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'Señor Developer'
+      expect(auth[:group_name]).to eq 'R&D, Innovation'
+      expect(auth[:role_name]).to eq "Lead's Team"
+      expect(auth[:permission_name]).to eq 'café access'
+      expect(auth[:resource_name]).to eq 'Ürban Döcument'
+    end
+
+    it "external_id and external_type fields are correctly propagated in authorization results via AR" do
+      user = SuperAuth::ActiveRecord::User.create!(name: 'ExtUser', external_id: 'ext-user-123', external_type: 'ldap')
+      resource = SuperAuth::ActiveRecord::Resource.create!(name: 'ExtResource', external_id: 'ext-res-456', external_type: 'aws_s3')
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: 'read')
+
+      # Test via direct user->resource path (Strategy 5)
+      SuperAuth::Edge.create(user_id: user.id, resource_id: resource.id)
+
+      direct_auths = SuperAuth::ActiveRecord::Edge.users_resources.to_a
+      expect(direct_auths.length).to eq 1
+
+      auth = direct_auths.first
+      expect(auth[:user_external_id]).to eq 'ext-user-123'
+      expect(auth[:user_external_type]).to eq 'ldap'
+      expect(auth[:resource_external_id]).to eq 'ext-res-456'
+      expect(auth[:resource_external_type]).to eq 'aws_s3'
+
+      # Test via user->permission->resource path (Strategy 4)
+      SuperAuth::Edge.create(user_id: user.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      perm_auths = SuperAuth::ActiveRecord::Edge.users_permissions_resources.to_a
+      expect(perm_auths.length).to eq 1
+
+      perm_auth = perm_auths.first
+      expect(perm_auth[:user_external_id]).to eq 'ext-user-123'
+      expect(perm_auth[:user_external_type]).to eq 'ldap'
+      expect(perm_auth[:resource_external_id]).to eq 'ext-res-456'
+      expect(perm_auth[:resource_external_type]).to eq 'aws_s3'
+
+      # Test via full authorizations union - all records should carry external fields
+      all_auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      all_auths.each do |a|
+        expect(a[:user_external_id]).to eq 'ext-user-123'
+        expect(a[:user_external_type]).to eq 'ldap'
+        expect(a[:resource_external_id]).to eq 'ext-res-456'
+        expect(a[:resource_external_type]).to eq 'aws_s3'
+      end
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
