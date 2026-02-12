@@ -42,11 +42,11 @@ module SuperAuth
   end
 
   def self.current_user=(user)
-    @current_user = user
+    Thread.current[:super_auth_current_user] = user
   end
 
   def self.current_user
-    @current_user
+    Thread.current[:super_auth_current_user]
   end
 
   def self.db
@@ -57,13 +57,18 @@ module SuperAuth
       extensions = Gem::Specification.find_all_by_name("sequel-activerecord_connection").any? ? { extensions: :activerecord_connection } : {}
 
       if extensions.empty?
-        puts "Found ActiveRecord but could not find the gem 'sequel-activerecord_connection' installed. SuperAuth may not always work as expected."
+        warn "[SuperAuth] WARNING: Found ActiveRecord but could not find the gem 'sequel-activerecord_connection' installed. SuperAuth may not always work as expected."
       end
 
       begin
         ::ActiveRecord::Base.establish_connection
       rescue ActiveRecord::AdapterNotSpecified
-        puts "ActiveRecord database could not be found. Using in-memory database."
+        if defined?(Rails) && !Rails.env.local?
+          raise Error, "SuperAuth could not find a database configuration. " \
+            "Please configure ActiveRecord or set SUPER_AUTH_DATABASE_URL."
+        end
+        warn "[SuperAuth] WARNING: No database configured. Falling back to in-memory SQLite. " \
+          "All authorization data will be lost on restart."
         ::ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
       end
 
@@ -75,7 +80,7 @@ module SuperAuth
       when "ActiveRecord::ConnectionAdapters::Mysql2Adapter"
         SuperAuth.db = Sequel.mysql2(**extensions)
       else
-        puts "Unknown adapter: #{::ActiveRecord::Base.adapter_class}"
+        warn "[SuperAuth] WARNING: Unknown adapter: #{::ActiveRecord::Base.adapter_class}"
       end
     else
       logger =
@@ -91,7 +96,12 @@ module SuperAuth
       if !ENV['SUPER_AUTH_DATABASE_URL'].nil? && !ENV['SUPER_AUTH_DATABASE_URL'].empty?
         SuperAuth.db = Sequel.connect(ENV['SUPER_AUTH_DATABASE_URL'], **logger)
       else
-        puts "ENV SUPER_AUTH_DATABASE_URL not set, using sqlite."
+        if defined?(Rails) && !Rails.env.local?
+          raise Error, "SuperAuth could not find a database configuration. " \
+            "Please set SUPER_AUTH_DATABASE_URL or configure ActiveRecord."
+        end
+        warn "[SuperAuth] WARNING: SUPER_AUTH_DATABASE_URL not set. Falling back to in-memory SQLite. " \
+          "All authorization data will be lost on restart."
         SuperAuth.db = Sequel.sqlite(**logger)
       end
     end

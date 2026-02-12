@@ -642,11 +642,11 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
     end
 
     it "user linked to an unrelated role does NOT get authorized to the resource" do
@@ -810,11 +810,11 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
     end
 
     it "user in an unrelated group does NOT get authorized" do
@@ -919,17 +919,17 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
 
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
     end
 
     it "user with an unrelated permission does NOT get authorized to the resource" do
@@ -997,19 +997,19 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
 
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
 
-      expect(edge[:permission_id]).to eq 0
+      expect(edge[:permission_id]).to be_nil
       expect(edge[:permission_name]).to be_nil
     end
 
@@ -2406,11 +2406,11 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
     end
 
     it "user linked to an unrelated role does NOT get authorized to the resource" do
@@ -2574,11 +2574,11 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
     end
 
     it "user in an unrelated group does NOT get authorized" do
@@ -2683,17 +2683,17 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
 
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
     end
 
     it "user with an unrelated permission does NOT get authorized to the resource" do
@@ -2761,19 +2761,19 @@ RSpec.describe SuperAuth do
       expect(edges.length).to eq 1
 
       edge = edges.first
-      expect(edge[:group_id]).to eq 0
+      expect(edge[:group_id]).to be_nil
       expect(edge[:group_name]).to be_nil
       expect(edge[:group_path]).to be_nil
       expect(edge[:group_name_path]).to be_nil
-      expect(edge[:group_parent_id]).to eq 0
+      expect(edge[:group_parent_id]).to be_nil
 
-      expect(edge[:role_id]).to eq 0
+      expect(edge[:role_id]).to be_nil
       expect(edge[:role_name]).to be_nil
       expect(edge[:role_path]).to be_nil
       expect(edge[:role_name_path]).to be_nil
-      expect(edge[:role_parent_id]).to eq 0
+      expect(edge[:role_parent_id]).to be_nil
 
-      expect(edge[:permission_id]).to eq 0
+      expect(edge[:permission_id]).to be_nil
       expect(edge[:permission_name]).to be_nil
     end
 
