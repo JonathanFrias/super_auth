@@ -6,7 +6,7 @@ class CreateSuperAuthEdges < ActiveRecord::Migration[7.0]
       t.references :permission, foreign_key: { to_table: :super_auth_permissions }, null: true
       t.references :role, foreign_key: { to_table: :super_auth_roles }, null: true
       t.references :resource, foreign_key: { to_table: :super_auth_resources }, null: true
-      t.timestamps
+      t.timestamps default: -> { "CURRENT_TIMESTAMP" }
     end
   end
 end

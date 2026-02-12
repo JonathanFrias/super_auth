@@ -90,7 +90,7 @@ module SuperAuth::Nestable
 
     def with_ascending_paths(base_ds, recursive_ds, cte_name)
       [
-        base_ds.select_append(Sequel[table_name][:id].cast(string_cast_type).as(base_path)).select_append(Sequel[table_name][:name].as(:base_name_path)),
+        base_ds.select_append(Sequel[table_name][:id].cast(string_cast_type).as(base_path)).select_append(Sequel[table_name][:name].as(base_name_path)),
         recursive_ds.select_append(
           Sequel.function(:concat,
             Sequel[table_name][:id].cast(string_cast_type),

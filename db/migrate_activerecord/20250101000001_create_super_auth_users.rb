@@ -4,7 +4,7 @@ class CreateSuperAuthUsers < ActiveRecord::Migration[7.0]
       t.string :external_id
       t.string :external_type
       t.string :name
-      t.timestamps
+      t.timestamps default: -> { "CURRENT_TIMESTAMP" }
     end
   end
 end

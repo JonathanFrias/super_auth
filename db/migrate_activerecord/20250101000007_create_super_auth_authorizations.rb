@@ -35,7 +35,7 @@ class CreateSuperAuthAuthorizations < ActiveRecord::Migration[7.0]
       t.string :resource_external_id
       t.string :resource_external_type
 
-      t.timestamps
+      t.timestamps default: -> { "CURRENT_TIMESTAMP" }
     end
   end
 end
