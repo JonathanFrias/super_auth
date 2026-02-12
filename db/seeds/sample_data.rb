@@ -27,6 +27,8 @@ end
 # Clear existing data (optional - comment out if you don't want this)
 puts "Clearing existing data..."
 Edge.delete_all
+Group.update_all(parent_id: nil)
+Role.update_all(parent_id: nil)
 User.delete_all
 Group.delete_all
 Role.delete_all
