@@ -32,24 +32,77 @@ bundle install
 
 ### Rails Setup
 
+**Step 1.** Add SuperAuth and the Sequel-ActiveRecord bridge to your Gemfile:
+
+```ruby
+gem "super_auth"
+gem "sequel-activerecord_connection"
+```
+
+Then run:
+
+```bash
+bundle install
+```
+
+The `sequel-activerecord_connection` gem lets SuperAuth's Sequel engine share your existing ActiveRecord database connection, so there is nothing extra to configure.
+
+**Step 2.** Run the install generator:
+
 ```bash
 rails generate super_auth:install
 ```
 
-This creates an initializer at `config/initializers/super_auth.rb` that calls `SuperAuth.load`.
+This creates an initializer at `config/initializers/super_auth.rb`. The SuperAuth Railtie automatically connects to your ActiveRecord database and loads all models on boot -- no manual configuration is needed.
 
-Install the database tables:
+**Step 3.** Copy the SuperAuth migrations into your app and run them:
 
-```ruby
-SuperAuth.install_migrations
+```bash
+rails railties:install:migrations
+rails db:migrate
 ```
 
-Mount the engine for the visualization UI (optional):
+This creates the `super_auth_*` tables (users, groups, roles, permissions, resources, edges, authorizations) alongside your application's tables.
+
+**Step 4.** Set the current user in your controller:
+
+```ruby
+class ApplicationController < ActionController::Base
+  before_action :set_super_auth_user
+
+  private
+
+  def set_super_auth_user
+    SuperAuth.current_user = current_user
+  end
+end
+```
+
+SuperAuth uses `SuperAuth.current_user` (a thread-local) to know who is making the request. You can pass your own application's user object -- SuperAuth matches it via `external_id` and `external_type`.
+
+**Step 5.** Add `super_auth` to any model you want to protect:
+
+```ruby
+class Post < ApplicationRecord
+  super_auth
+end
+```
+
+This adds a default scope that automatically filters records. Only records the current user is authorized to access will be returned from queries:
+
+```ruby
+Post.all                        # only posts the current user can access
+Post.where(published: true)     # scoped AND filtered by authorization
+```
+
+**Step 6 (optional).** Mount the visualization engine:
 
 ```ruby
 # config/routes.rb
 mount SuperAuth::Engine => '/super_auth'
 ```
+
+Then visit `http://localhost:3000/super_auth/visualization` to see your authorization graph.
 
 ### Standalone Setup (without Rails)
 
@@ -334,6 +387,16 @@ edge.destroy
 
 ## Rails Integration
 
+### How it works
+
+SuperAuth uses [Sequel](https://sequel.jeremyevans.net/) internally for its graph query engine and ships a set of ActiveRecord adapters so it integrates seamlessly with your Rails app. The `sequel-activerecord_connection` gem lets both ORMs share the same database connection, so there is nothing extra to configure.
+
+On boot, the SuperAuth Railtie:
+
+1. Detects your ActiveRecord database configuration
+2. Creates a matching Sequel connection (shared via `sequel-activerecord_connection`)
+3. Loads all SuperAuth models (both Sequel and ActiveRecord)
+
 ### ActiveRecord auto-filtering
 
 Add `super_auth` to any model to automatically filter records based on the current user's authorizations:
@@ -344,7 +407,7 @@ class Post < ApplicationRecord
 end
 ```
 
-Set the current user in your controller:
+Set the current user in your controller (see [Rails Setup](#rails-setup) Step 4):
 
 ```ruby
 class ApplicationController < ActionController::Base
@@ -392,7 +455,7 @@ sa_resource = SuperAuth::Resource.create(
 )
 ```
 
-When `super_auth` is included in a model, it uses these external links to match authorization records.
+When `super_auth` is included in a model, the default scope matches the current user's `id` and class name against `external_id` / `external_type` in the authorizations table. This means your application user objects work directly -- no need to convert to SuperAuth users in the controller.
 
 ### ActiveRecord models
 
@@ -406,6 +469,13 @@ SuperAuth::ActiveRecord::Permission
 SuperAuth::ActiveRecord::Resource
 SuperAuth::ActiveRecord::Edge
 SuperAuth::ActiveRecord::Authorization
+```
+
+These models point to the same `super_auth_*` tables and can be used alongside the Sequel models. The ActiveRecord Edge model delegates authorization queries to the Sequel engine:
+
+```ruby
+# Works the same as SuperAuth::Edge.authorizations, but returns ActiveRecord objects
+SuperAuth::ActiveRecord::Edge.authorizations
 ```
 
 ## Auditing
