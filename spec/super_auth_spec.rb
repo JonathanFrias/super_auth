@@ -1615,6 +1615,166 @@ RSpec.describe SuperAuth do
     end
   end
 
+  describe "US-011: Edge Cases and Boundary Conditions" do
+    it "user belonging to multiple groups that each lead to the same resource via different paths" do
+      user = SuperAuth::User.create(name: 'MultiGroupUser')
+      group_a = SuperAuth::Group.create(name: 'Engineering')
+      group_b = SuperAuth::Group.create(name: 'Operations')
+      role_a = SuperAuth::Role.create(name: 'Developer')
+      role_b = SuperAuth::Role.create(name: 'Operator')
+      perm_a = SuperAuth::Permission.create(name: 'deploy')
+      perm_b = SuperAuth::Permission.create(name: 'monitor')
+      resource = SuperAuth::Resource.create(name: 'production')
+
+      # Path 1: user -> group_a -> role_a -> perm_a -> resource
+      SuperAuth::Edge.create(user: user, group: group_a)
+      SuperAuth::Edge.create(group: group_a, role: role_a)
+      SuperAuth::Edge.create(role: role_a, permission: perm_a)
+      SuperAuth::Edge.create(permission: perm_a, resource: resource)
+
+      # Path 2: user -> group_b -> role_b -> perm_b -> resource
+      SuperAuth::Edge.create(user: user, group: group_b)
+      SuperAuth::Edge.create(group: group_b, role: role_b)
+      SuperAuth::Edge.create(role: role_b, permission: perm_b)
+      SuperAuth::Edge.create(permission: perm_b, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      user_auths = auths.select { |a| a[:user_name] == 'MultiGroupUser' }
+
+      # Should have at least 2 records (one per path through different groups)
+      expect(user_auths.length).to be >= 2
+
+      # All point to the same resource
+      user_auths.each do |auth|
+        expect(auth[:resource_name]).to eq 'production'
+      end
+
+      # Both groups should appear
+      group_names = user_auths.map { |a| a[:group_name] }.uniq.sort
+      expect(group_names).to eq ['Engineering', 'Operations']
+    end
+
+    it "group with no users linked produces no authorizations" do
+      _group = SuperAuth::Group.create(name: 'EmptyGroup')
+      role = SuperAuth::Role.create(name: 'Admin')
+      permission = SuperAuth::Permission.create(name: 'manage')
+      resource = SuperAuth::Resource.create(name: 'settings')
+
+      SuperAuth::Edge.create(group: _group, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "role with no groups or users linked produces no authorizations" do
+      role = SuperAuth::Role.create(name: 'OrphanRole')
+      permission = SuperAuth::Permission.create(name: 'execute')
+      resource = SuperAuth::Resource.create(name: 'pipeline')
+
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "permission linked to a role but no resource produces no authorizations" do
+      user = SuperAuth::User.create(name: 'Alice')
+      role = SuperAuth::Role.create(name: 'Developer')
+      permission = SuperAuth::Permission.create(name: 'code_review')
+
+      SuperAuth::Edge.create(user: user, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      # No permission -> resource edge
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 0
+    end
+
+    it "resource with no permission edges produces no authorizations (except direct user->resource)" do
+      user = SuperAuth::User.create(name: 'Bob')
+      resource = SuperAuth::Resource.create(name: 'isolated-file')
+      _orphan_resource = SuperAuth::Resource.create(name: 'orphan-resource')
+
+      # Only direct user -> resource edge (no permission edges to either resource)
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+      expect(auths.first[:user_name]).to eq 'Bob'
+      expect(auths.first[:resource_name]).to eq 'isolated-file'
+
+      # The orphan resource with no edges at all should not appear
+      resource_names = auths.map { |a| a[:resource_name] }
+      expect(resource_names).not_to include('orphan-resource')
+    end
+
+    it "names with special characters (spaces, unicode, commas, quotes)" do
+      user = SuperAuth::User.create(name: 'Señor Developer')
+      group = SuperAuth::Group.create(name: 'R&D, Innovation')
+      role = SuperAuth::Role.create(name: "Lead's Team")
+      permission = SuperAuth::Permission.create(name: 'café access')
+      resource = SuperAuth::Resource.create(name: 'Ürban Döcument')
+
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      auths = SuperAuth::Edge.authorizations.all
+      expect(auths.length).to eq 1
+
+      auth = auths.first
+      expect(auth[:user_name]).to eq 'Señor Developer'
+      expect(auth[:group_name]).to eq 'R&D, Innovation'
+      expect(auth[:role_name]).to eq "Lead's Team"
+      expect(auth[:permission_name]).to eq 'café access'
+      expect(auth[:resource_name]).to eq 'Ürban Döcument'
+    end
+
+    it "external_id and external_type fields are correctly propagated in authorization results" do
+      user = SuperAuth::User.create(name: 'ExtUser', external_id: 'ext-user-123', external_type: 'ldap')
+      resource = SuperAuth::Resource.create(name: 'ExtResource', external_id: 'ext-res-456', external_type: 'aws_s3')
+      permission = SuperAuth::Permission.create(name: 'read')
+
+      # Test via direct user->resource path (Strategy 5)
+      SuperAuth::Edge.create(user: user, resource: resource)
+
+      direct_auths = SuperAuth::Edge.users_resources.all
+      expect(direct_auths.length).to eq 1
+
+      auth = direct_auths.first
+      expect(auth[:user_external_id]).to eq 'ext-user-123'
+      expect(auth[:user_external_type]).to eq 'ldap'
+      expect(auth[:resource_external_id]).to eq 'ext-res-456'
+      expect(auth[:resource_external_type]).to eq 'aws_s3'
+
+      # Test via user->permission->resource path (Strategy 4)
+      SuperAuth::Edge.create(user: user, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      perm_auths = SuperAuth::Edge.users_permissions_resources.all
+      expect(perm_auths.length).to eq 1
+
+      perm_auth = perm_auths.first
+      expect(perm_auth[:user_external_id]).to eq 'ext-user-123'
+      expect(perm_auth[:user_external_type]).to eq 'ldap'
+      expect(perm_auth[:resource_external_id]).to eq 'ext-res-456'
+      expect(perm_auth[:resource_external_type]).to eq 'aws_s3'
+
+      # Test via full authorizations union - all records should carry external fields
+      all_auths = SuperAuth::Edge.authorizations.all
+      all_auths.each do |a|
+        expect(a[:user_external_id]).to eq 'ext-user-123'
+        expect(a[:user_external_type]).to eq 'ldap'
+        expect(a[:resource_external_id]).to eq 'ext-res-456'
+        expect(a[:resource_external_type]).to eq 'aws_s3'
+      end
+    end
+  end
+
   it "can create a role tree" do
     root_role = SuperAuth::Role.create(name: 'root')
       admin_role = SuperAuth::Role.create(name: 'admin', parent: root_role)
