@@ -54,10 +54,8 @@ RSpec.describe SuperAuth do
       SuperAuth.current_user = nil
     end
 
-    it "errors" do
-      expect {
-        resource_class.limit(10).to_sql
-      }.to raise_error("SuperAuth.current_user not set")
+    it "returns no records" do
+      expect(resource_class.all.to_a).to eq([])
     end
   end
 
@@ -86,7 +84,7 @@ RSpec.describe SuperAuth do
       expect(sql).to include("SELECT")
       expect(sql).to include("resources")
       expect(sql).to include("super_auth_authorizations")
-      expect(sql).to include("resource_id")
+      expect(sql).to include("resource_external_id")
       expect(sql).to include("user_id")
       expect(sql).to include(SuperAuth.current_user.id.to_s)
       expect(sql).to include("Resource")
@@ -102,7 +100,7 @@ RSpec.describe SuperAuth do
       expect(sql).to include("SELECT")
       expect(sql).to include("resources")
       expect(sql).to include("super_auth_authorizations")
-      expect(sql).to include("resource_id")
+      expect(sql).to include("resource_external_id")
       expect(sql).to include("user_external_id")
       expect(sql).to include(SuperAuth.current_user.id.to_s)
       expect(sql).to include("ExternalUser")
@@ -121,6 +119,65 @@ RSpec.describe SuperAuth do
       SuperAuth::ActiveRecord::Edge.create!(permission:, resource:)
 
       expect(SuperAuth::ActiveRecord::Edge.authorizations.count).to eq 1
+    end
+  end
+
+  context "type-level authorization (admin wildcard)" do
+    before do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.create(name: "admin")
+      resource_class.unscoped.delete_all
+    end
+
+    it "returns all records when user has type-level authorization" do
+      # Create some records
+      resource_class.create!(name: "r1")
+      resource_class.create!(name: "r2")
+
+      # Insert a type-level authorization row (resource_external_id IS NULL)
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "Resource",
+        resource_external_id: nil
+      )
+
+      results = resource_class.all.to_a
+      expect(results.length).to eq(2)
+    end
+  end
+
+  context "per-record authorization" do
+    before do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.create(name: "regular")
+      resource_class.unscoped.delete_all
+    end
+
+    it "returns only authorized records" do
+      r1 = resource_class.create!(name: "r1")
+      resource_class.create!(name: "r2")
+      r3 = resource_class.create!(name: "r3")
+
+      # Authorize only r1 and r3
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "Resource",
+        resource_external_id: r1.id.to_s
+      )
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "Resource",
+        resource_external_id: r3.id.to_s
+      )
+
+      results = resource_class.all.to_a
+      expect(results.length).to eq(2)
+      expect(results.map(&:name).sort).to eq(["r1", "r3"])
+    end
+
+    it "returns no records when user has no authorizations" do
+      resource_class.create!(name: "r1")
+
+      results = resource_class.all.to_a
+      expect(results).to be_empty
     end
   end
 end
