@@ -182,15 +182,8 @@ module SuperAuth
     end
 
     def compile_authorizations
-      # Compile all authorization paths and populate the authorizations table
       begin
-        authorization_class.delete_all
-
-        # Call the authorizations method which compiles all paths
-        authorizations = edge_class.authorizations
-        authorizations.each(&:save!)
-
-        count = authorizations.count
+        count = authorization_class.compile!
 
         render json: {
           success: true,
