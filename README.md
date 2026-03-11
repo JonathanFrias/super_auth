@@ -47,6 +47,21 @@ Then visit: `http://localhost:3000/super_auth/visualization`
 
 See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
 
+## Configuration
+
+```ruby
+# config/initializers/super_auth.rb
+SuperAuth.setup do |config|
+  # Raise an error when a query runs without a current user set.
+  # Default is :none (returns empty results silently).
+  config.missing_user_behavior = :raise
+end
+```
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `missing_user_behavior` | `:none`, `:raise` | `:none` | Controls what happens when `SuperAuth.current_user` is blank. `:none` returns an empty result set. `:raise` raises `SuperAuth::Error`. |
+
 ## Usage
 
 SuperAuth is a rules engine engine that works on 5 different authorization concepts:
