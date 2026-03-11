@@ -57,6 +57,36 @@ RSpec.describe SuperAuth do
     it "returns no records" do
       expect(resource_class.all.to_a).to eq([])
     end
+
+    context "with missing_user_behavior = :raise" do
+      around do |example|
+        SuperAuth.missing_user_behavior = :raise
+        example.run
+      ensure
+        SuperAuth.missing_user_behavior = :none
+      end
+
+      it "raises SuperAuth::Error" do
+        expect { resource_class.all.to_a }.to raise_error(SuperAuth::Error, "SuperAuth.current_user not set")
+      end
+    end
+  end
+
+  describe ".missing_user_behavior" do
+    it "defaults to :none" do
+      expect(SuperAuth.missing_user_behavior).to eq(:none)
+    end
+
+    it "accepts :raise" do
+      SuperAuth.missing_user_behavior = :raise
+      expect(SuperAuth.missing_user_behavior).to eq(:raise)
+    ensure
+      SuperAuth.missing_user_behavior = :none
+    end
+
+    it "rejects invalid values" do
+      expect { SuperAuth.missing_user_behavior = :invalid }.to raise_error(ArgumentError, /must be :none or :raise/)
+    end
   end
 
   context "when logged in" do

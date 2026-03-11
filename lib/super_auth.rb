@@ -8,6 +8,20 @@ module SuperAuth
     yield self if block_given?
   end
 
+  # Controls behavior when SuperAuth.current_user is blank in ByCurrentUser scope.
+  # :none (default) — returns an empty result set silently
+  # :raise — raises SuperAuth::Error
+  def self.missing_user_behavior
+    @missing_user_behavior || :none
+  end
+
+  def self.missing_user_behavior=(behavior)
+    unless %i[none raise].include?(behavior)
+      raise ArgumentError, "missing_user_behavior must be :none or :raise, got #{behavior.inspect}"
+    end
+    @missing_user_behavior = behavior
+  end
+
   def self.load
     require "super_auth/authorization"
     require "super_auth/edge"

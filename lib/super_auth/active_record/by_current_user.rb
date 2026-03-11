@@ -1,7 +1,10 @@
 module SuperAuth::ActiveRecord::ByCurrentUser
   def self.included(base)
     base.send(:default_scope, **{all_queries: true}) do
-      next none if SuperAuth.current_user.blank?
+      if SuperAuth.current_user.blank?
+        raise SuperAuth::Error, "SuperAuth.current_user not set" if SuperAuth.missing_user_behavior == :raise
+        next none
+      end
 
       if SuperAuth.current_user.respond_to?(:system?) && SuperAuth.current_user.system?
         self
