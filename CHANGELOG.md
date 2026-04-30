@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Fix: detect PostgreSQL/SQLite/Mysql2 adapter subclasses (e.g. PostGIS, Makara) when bootstrapping the Sequel connection from ActiveRecord. Previously only the exact stock adapter classes were recognized, leaving `SuperAuth.db` unset for apps using a subclassed adapter.
+
 ## [0.3.2] - 2026-03-10
 
 - Feature: Add `SuperAuth.missing_user_behavior` configuration option

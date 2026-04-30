@@ -86,12 +86,14 @@ module SuperAuth
         ::ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
       end
 
-      case ::ActiveRecord::Base.adapter_class.to_s
-      when "ActiveRecord::ConnectionAdapters::SQLite3Adapter"
+      # Walk the ancestor chain so adapter subclasses (e.g. PostGIS, Makara)
+      # are recognized as their parent adapter type.
+      adapter_ancestors = ::ActiveRecord::Base.adapter_class.ancestors.map(&:to_s)
+      if adapter_ancestors.include?("ActiveRecord::ConnectionAdapters::SQLite3Adapter")
         SuperAuth.db = Sequel.sqlite(**extensions)
-      when "ActiveRecord::ConnectionAdapters::PostgreSQLAdapter"
+      elsif adapter_ancestors.include?("ActiveRecord::ConnectionAdapters::PostgreSQLAdapter")
         SuperAuth.db = Sequel.postgres(**extensions)
-      when "ActiveRecord::ConnectionAdapters::Mysql2Adapter"
+      elsif adapter_ancestors.include?("ActiveRecord::ConnectionAdapters::Mysql2Adapter")
         SuperAuth.db = Sequel.mysql2(**extensions)
       else
         warn "[SuperAuth] WARNING: Unknown adapter: #{::ActiveRecord::Base.adapter_class}"
