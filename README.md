@@ -47,6 +47,49 @@ Then visit: `http://localhost:3000/super_auth/visualization`
 
 See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
 
+## Postgres Row-Level Security (optional)
+
+The `ByCurrentUser` scope enforces authorization at the ORM layer. On Postgres you can
+additionally enforce the same rules inside the database itself, so raw SQL, `unscoped`,
+background jobs, and any other client on the same database are subject to them too —
+unauthorized rows become invisible at the connection level.
+
+```bash
+rails generate super_auth:rls Document Invoice
+rails db:migrate
+```
+
+```ruby
+# config/initializers/super_auth.rb
+SuperAuth.setup do |config|
+  config.rls = true
+end
+```
+
+How it works: `SuperAuth.current_user=` mirrors the user's identity into Postgres
+session settings (`super_auth.user_id` etc.), and each generated policy checks the
+`super_auth_authorizations` table with the same semantics as `ByCurrentUser` —
+type-level authorizations (`resource_external_id IS NULL`) act as a wildcard,
+per-record authorizations match on id, and `system?` users bypass the policy.
+The Railtie clears identity at the start of every request/job so pooled
+connections cannot leak the previous user.
+
+Notes:
+
+- The database role your app connects as needs `SELECT` on `super_auth_authorizations`
+  (policies read it), and must not be a superuser or `BYPASSRLS` role — those always
+  bypass RLS. The policies use `FORCE ROW LEVEL SECURITY`, so a role that merely owns
+  the tables is fine.
+- Creating rows requires a type-level authorization for that resource type (or system
+  context): Postgres applies the visibility policy to `INSERT ... RETURNING`, which
+  ActiveRecord and Sequel use to fetch new ids, so a row its creator couldn't see
+  can't be inserted.
+- Identity is session-scoped on the connection, which assumes the standard Rails
+  model of one connection pinned per thread per request. Transaction-mode poolers
+  (e.g. pgbouncer) are not supported.
+- Postgres only. On other databases `SuperAuth::RLS` raises, and the ORM scope
+  remains the enforcement layer.
+
 ## Configuration
 
 ```ruby

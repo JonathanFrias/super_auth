@@ -59,5 +59,14 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby }}
         bundler-cache: true
+    # SuperAuth.db routes through ActiveRecord when it is installed, and AR
+    # reads DATABASE_URL — without this the postgres/mysql legs silently fall
+    # back to in-memory SQLite. Postgres-only for now: the mysql leg has
+    # pre-existing failures once it stops testing SQLite (e.g. migration
+    # rollback hits "Cannot drop index needed in a foreign key constraint"),
+    # and the sqlite leg's Sequel-style URL is not understood by AR.
+    - name: Point ActiveRecord at the matrix database
+      if: matrix.database == 'postgres'
+      run: echo "DATABASE_URL=$SUPER_AUTH_DATABASE_URL" >> "$GITHUB_ENV"
     - name: Run the default task
       run: bundle exec rake
