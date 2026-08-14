@@ -1,0 +1,13 @@
+class EnableSuperAuthRls < ActiveRecord::Migration[<%= ActiveRecord::Migration.current_version %>]
+  def up
+<% models.each do |model| -%>
+    SuperAuth::RLS.enable(:<%= model.tableize.tr('/', '_') %>, resource_type: "<%= model.camelize %>")
+<% end -%>
+  end
+
+  def down
+<% models.each do |model| -%>
+    SuperAuth::RLS.disable(:<%= model.tableize.tr('/', '_') %>)
+<% end -%>
+  end
+end

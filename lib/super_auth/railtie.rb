@@ -18,6 +18,13 @@ module SuperAuth
         load "tasks/super_auth_tasks.rake"
       end
 
+      initializer "super_auth.rls" do |app|
+        # Clear identity settings at the start of each request/job so a
+        # pooled connection can't leak the previous user's identity into a
+        # request that never assigns current_user.
+        app.executor.to_run { SuperAuth::RLS.clear if SuperAuth.rls }
+      end
+
       initializer "super_auth.initialize" do
         if defined?(ActiveRecord) && defined?(ActiveRecord::Base)
           SuperAuth.db
