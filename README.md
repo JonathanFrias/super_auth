@@ -76,6 +76,10 @@ connections cannot leak the previous user.
 
 Notes:
 
+- Set `config.external_id_type` to your app's pk type **before running the super_auth
+  migrations** (see Configuration). The policy compares `super_auth_authorizations.resource_external_id`
+  directly against your table's pk, so the columns must share a type — there is no
+  casting at query time, in either the policy or the ORM scope.
 - The database role your app connects as needs `SELECT` on `super_auth_authorizations`
   (policies read it), and must not be a superuser or `BYPASSRLS` role — those always
   bypass RLS. The policies use `FORCE ROW LEVEL SECURITY`, so a role that merely owns
@@ -104,6 +108,7 @@ end
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | `missing_user_behavior` | `:none`, `:raise` | `:none` | Controls what happens when `SuperAuth.current_user` is blank. `:none` returns an empty result set. `:raise` raises `SuperAuth::Error`. |
+| `external_id_type` | `:string`, `:bigint`, `:uuid`, ... | `:string` | Column type for the external id columns, applied when the migrations run. Set it to your application's primary key type so every comparison against your tables' pks is natively typed — no casting anywhere. |
 
 ## Usage
 

@@ -3,7 +3,7 @@ class CreateSuperAuthAuthorizations < ActiveRecord::Migration[7.0]
     create_table :super_auth_authorizations do |t|
       t.integer :user_id
       t.string :user_name
-      t.string :user_external_id
+      t.column :user_external_id, SuperAuth.external_id_type
       t.string :user_external_type
       t.datetime :user_created_at
       t.datetime :user_updated_at
@@ -32,7 +32,7 @@ class CreateSuperAuthAuthorizations < ActiveRecord::Migration[7.0]
 
       t.integer :resource_id
       t.string :resource_name
-      t.string :resource_external_id
+      t.column :resource_external_id, SuperAuth.external_id_type
       t.string :resource_external_type
 
       t.timestamps default: -> { "CURRENT_TIMESTAMP" }
