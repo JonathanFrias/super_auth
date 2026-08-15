@@ -52,45 +52,98 @@ See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
 The `ByCurrentUser` scope enforces authorization at the ORM layer. On Postgres you can
 additionally enforce the same rules inside the database itself, so raw SQL, `unscoped`,
 background jobs, and any other client on the same database are subject to them too —
-unauthorized rows become invisible at the connection level.
+unauthorized rows become invisible at the connection level. This is also what makes
+super_auth usable as a central authorization service for apps that aren't written in
+Ruby at all: Postgres does the enforcing, so any language that can run SQL can
+participate (see "Enforcing from other apps" below).
+
+### Setup (Rails)
+
+**1. Match column types to your primary keys — before your first migration.**
+The policies compare `super_auth_authorizations.resource_external_id` directly
+against your tables' pks with no casting, so the columns must share a type:
+
+```ruby
+# config/initializers/super_auth.rb
+SuperAuth.setup do |config|
+  config.external_id_type = :bigint   # Rails' default pk type; use :uuid, :string, ... to match yours
+  config.rls = true                   # mirror current_user into Postgres session settings
+end
+```
+
+If super_auth is already migrated with the wrong type, alter the four external id
+columns (`super_auth_users.external_id`, `super_auth_resources.external_id`,
+`super_auth_authorizations.user_external_id`, `super_auth_authorizations.resource_external_id`)
+in a migration of your own.
+
+**2. Enable RLS on the tables you want protected:**
 
 ```bash
 rails generate super_auth:rls Document Invoice
 rails db:migrate
 ```
 
-```ruby
-# config/initializers/super_auth.rb
-SuperAuth.setup do |config|
-  config.rls = true
-end
+This creates one migration calling `SuperAuth::RLS.enable(:documents, resource_type: "Document")`
+per model — you can also call that directly for tables outside Rails. `resource_type`
+must match the `resource_external_type` used in your authorization rows (the model's
+class name when you use the AR integration).
+
+**3. Connect as a role RLS applies to.** Superusers and `BYPASSRLS` roles skip
+policies entirely, so the app must not connect as one (owning the tables is fine —
+the policies use `FORCE ROW LEVEL SECURITY`). The role needs `SELECT` on
+`super_auth_authorizations`, which the policies read:
+
+```sql
+CREATE ROLE app_runtime LOGIN PASSWORD '...';
+GRANT SELECT, INSERT, UPDATE, DELETE ON documents, invoices TO app_runtime;
+GRANT SELECT ON super_auth_authorizations TO app_runtime;
 ```
 
-How it works: `SuperAuth.current_user=` mirrors the user's identity into Postgres
-session settings (`super_auth.user_id` etc.), and each generated policy checks the
-`super_auth_authorizations` table with the same semantics as `ByCurrentUser` —
-type-level authorizations (`resource_external_id IS NULL`) act as a wildcard,
-per-record authorizations match on id, and `system?` users bypass the policy.
-The Railtie clears identity at the start of every request/job so pooled
-connections cannot leak the previous user.
+That's it. `SuperAuth.current_user=` now mirrors identity into Postgres session
+settings, each policy checks `super_auth_authorizations` with the same semantics as
+`ByCurrentUser` — type-level authorizations (`resource_external_id IS NULL`) act as a
+wildcard, per-record authorizations match on id, `system?` users bypass — and the
+Railtie clears identity at the start of every request/job so pooled connections
+cannot leak the previous user.
 
-Notes:
+### Enforcing from other apps (any language)
 
-- Set `config.external_id_type` to your app's pk type **before running the super_auth
-  migrations** (see Configuration). The policy compares `super_auth_authorizations.resource_external_id`
-  directly against your table's pk, so the columns must share a type — there is no
-  casting at query time, in either the policy or the ORM scope.
-- The database role your app connects as needs `SELECT` on `super_auth_authorizations`
-  (policies read it), and must not be a superuser or `BYPASSRLS` role — those always
-  bypass RLS. The policies use `FORCE ROW LEVEL SECURITY`, so a role that merely owns
-  the tables is fine.
+Administration — creating users, groups, roles, edges, and compiling them into
+`super_auth_authorizations` — stays with this gem (Rails or plain Ruby; the core is
+Sequel and needs no Rails). Enforcement does not: once the policies exist, any client
+of the database participates by setting four text session settings per request.
+
+For an external user (your app's own user records):
+
+```sql
+SELECT set_config('super_auth.user_external_id', '42', false),
+       set_config('super_auth.user_external_type', 'AppUser', false);
+
+-- run normal queries; rows the user isn't authorized for don't exist --
+
+SELECT set_config('super_auth.user_external_id', '', false),
+       set_config('super_auth.user_external_type', '', false);  -- clear before reusing the connection
+```
+
+For a user managed inside super_auth, set `super_auth.user_id` (its integer id)
+instead. Setting `super_auth.system` to `'true'` bypasses the policies (migrations,
+seeds, admin jobs). Unset or empty settings mean no identity: queries return nothing.
+
+Pass `true` as `set_config`'s third argument inside a transaction to scope identity
+to that transaction instead of the session — then no clearing is needed, and it is
+also the only mode that works behind transaction-pooling proxies like pgbouncer.
+
+### Notes
+
 - Creating rows requires a type-level authorization for that resource type (or system
   context): Postgres applies the visibility policy to `INSERT ... RETURNING`, which
   ActiveRecord and Sequel use to fetch new ids, so a row its creator couldn't see
   can't be inserted.
-- Identity is session-scoped on the connection, which assumes the standard Rails
-  model of one connection pinned per thread per request. Transaction-mode poolers
-  (e.g. pgbouncer) are not supported.
+- Session-scoped identity assumes one connection pinned per thread per request (the
+  standard Rails model). Behind a transaction-mode pooler, use transaction-scoped
+  `set_config` as above; the Rails integration does not support that mode.
+- One `external_id_type` covers the whole install, so every protected table across
+  every participating app needs the same pk type.
 - Postgres only. On other databases `SuperAuth::RLS` raises, and the ORM scope
   remains the enforcement layer.
 
