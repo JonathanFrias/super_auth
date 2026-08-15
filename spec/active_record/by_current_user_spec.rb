@@ -6,8 +6,15 @@ RSpec.describe SuperAuth do
 
   around do |example|
     # These specs use integer-pk app tables, so install with matching
-    # external id columns (what a real int-pk app configures).
+    # external id columns (what a real int-pk app configures). Earlier spec
+    # groups may have left tables built with the default :string columns and
+    # install_migrations is a no-op when tables exist — reinstall so the
+    # configured type actually applies.
     SuperAuth.external_id_type = :bigint
+    begin
+      SuperAuth.uninstall_migrations
+    rescue SuperAuth::Error
+    end
     SuperAuth.install_migrations
     SuperAuth.load
     SuperAuth::ActiveRecord::Edge.delete_all

@@ -38,8 +38,14 @@ RSpec.describe SuperAuth::RLS do
     skip "Postgres only" unless SuperAuth.db.database_type == :postgres
 
     # documents uses an integer pk, so install with matching external id
-    # columns — the typed policy comparison depends on it
+    # columns — the typed policy comparison depends on it. Reinstall in case
+    # an earlier spec group left tables with the default :string columns
+    # (install_migrations is a no-op when tables exist).
     SuperAuth.external_id_type = :bigint
+    begin
+      SuperAuth.uninstall_migrations
+    rescue SuperAuth::Error
+    end
     SuperAuth.install_migrations
     SuperAuth.load
     db.run "CREATE TABLE documents (id serial PRIMARY KEY, name text)"
