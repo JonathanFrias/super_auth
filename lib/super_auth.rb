@@ -60,6 +60,25 @@ module SuperAuth
     require "pathname"
     path = Pathname.new(__FILE__).parent.parent.join("db", "migrate")
     Sequel::Migrator.run(SuperAuth.db, path)
+    refresh_model_schemas
+  end
+
+  # Both ORMs cache column types per model class; after (re)installing the
+  # migrations those caches can describe a previous schema (e.g. a different
+  # external_id_type) and silently miscast assigned values.
+  def self.refresh_model_schemas
+    models = %w[User Group Permission Role Resource Edge Authorization]
+    if defined?(SuperAuth::ActiveRecord::User)
+      models.each do |name|
+        SuperAuth::ActiveRecord.const_get(name).reset_column_information
+      end
+    end
+    if defined?(SuperAuth::User) && SuperAuth::User.respond_to?(:set_dataset)
+      models.each do |name|
+        model = SuperAuth.const_get(name)
+        model.set_dataset(model.dataset)
+      end
+    end
   end
 
   def self.uninstall_migrations
