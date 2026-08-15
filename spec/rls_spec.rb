@@ -1,6 +1,6 @@
 require "spec_helper"
 
-# External-user class for apply_user (anonymous classes have no name).
+# External-user class for SuperAuth.as (anonymous classes have no name).
 SuperAuthRlsSpecUser = Struct.new(:id)
 SuperAuthRlsSpecSystemUser = Struct.new(:id) do
   def system?
@@ -22,6 +22,15 @@ RSpec.describe SuperAuth::RLS do
 
   def doc_names
     as_restricted_role { db[:documents].select_order_map(:name) }
+  end
+
+  # The SQL contract any client follows:
+  # BEGIN; SELECT super_auth_become(...); queries; COMMIT.
+  def become(user_external_id: nil, user_external_type: nil, user_id: nil, system: false)
+    db.transaction do
+      db.get(Sequel.function(:super_auth_become, user_external_id, user_external_type, user_id, system))
+      yield
+    end
   end
 
   def grant(user_external_id: nil, user_external_type: nil, user_id: nil, resource_external_id: nil)
@@ -58,9 +67,7 @@ RSpec.describe SuperAuth::RLS do
     example.run
   ensure
     if SuperAuth.db.database_type == :postgres
-      SuperAuth.rls = false
       SuperAuth.external_id_type = :string
-      described_class.clear
       db.run "RESET ROLE"
       db.run "DROP TABLE IF EXISTS documents"
       db.run "DROP OWNED BY super_auth_rls_spec" # revoke grants so the role can drop
@@ -72,54 +79,76 @@ RSpec.describe SuperAuth::RLS do
   let!(:doc1_id) { db[:documents].insert(name: "doc1") }
   let!(:doc2_id) { db[:documents].insert(name: "doc2") }
 
-  it "hides all rows when no identity is set" do
-    described_class.clear
+  it "hides all rows without an identity assertion" do
     expect(doc_names).to eq([])
   end
 
-  it "shows only rows the user is authorized for" do
+  it "shows granted rows inside the asserting transaction and none after it" do
     grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
-    described_class.apply_user(SuperAuthRlsSpecUser.new(42))
-    expect(doc_names).to eq(["doc1"])
+    names = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") { doc_names }
+    expect(names).to eq(["doc1"])
+    expect(doc_names).to eq([]) # identity died with the transaction
+  end
+
+  it "ignores session-scoped identity from a previous transaction (the leak path)" do
+    grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
+    settings = {
+      "super_auth.user_id" => "",
+      "super_auth.user_external_id" => "42",
+      "super_auth.user_external_type" => "SuperAuthRlsSpecUser",
+      "super_auth.system" => "",
+    }
+    db.transaction do
+      settings.each { |name, value| db.get(Sequel.function(:set_config, name, value, false)) }
+      db.get(Sequel.function(:set_config, "super_auth.xid", Sequel.function(:pg_current_xact_id).cast(:text), false))
+    end
+    # The stamp belongs to a committed transaction, so it can never match
+    # pg_current_xact_id() again: leaked session identity grants nothing.
+    expect(doc_names).to eq([])
+  ensure
+    if SuperAuth.db.database_type == :postgres
+      (settings.keys + ["super_auth.xid"]).each do |name|
+        db.get(Sequel.function(:set_config, name, "", false))
+      end
+    end
   end
 
   it "treats a type-level authorization (resource_external_id NULL) as a wildcard" do
     grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
-    described_class.apply_user(SuperAuthRlsSpecUser.new(42))
-    expect(doc_names).to eq(["doc1", "doc2"])
+    names = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") { doc_names }
+    expect(names).to eq(["doc1", "doc2"])
   end
 
   it "does not leak rows to a different user of the same id but different type" do
     grant(user_external_id: 42, user_external_type: "SomeOtherClass", resource_external_id: doc1_id)
-    described_class.apply_user(SuperAuthRlsSpecUser.new(42))
-    expect(doc_names).to eq([])
+    names = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") { doc_names }
+    expect(names).to eq([])
   end
 
   it "matches internal SuperAuth users on user_id" do
     user = SuperAuth::User.create(name: "internal")
     grant(user_id: user.id, resource_external_id: doc2_id)
-    described_class.apply_user(user)
-    expect(doc_names).to eq(["doc2"])
+    names = become(user_id: user.id.to_s) { doc_names }
+    expect(names).to eq(["doc2"])
   end
 
-  it "bypasses the policy for system users" do
-    described_class.apply_user(SuperAuthRlsSpecSystemUser.new(1))
-    expect(doc_names).to eq(["doc1", "doc2"])
+  it "bypasses the policy for system identities" do
+    names = become(system: true) { doc_names }
+    expect(names).to eq(["doc1", "doc2"])
   end
 
   it "scopes UPDATE and DELETE to authorized rows" do
     grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
-    described_class.apply_user(SuperAuthRlsSpecUser.new(42))
-    as_restricted_role do
-      expect(db[:documents].update(name: "renamed")).to eq(1)
-      expect(db[:documents].delete).to eq(1)
+    become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+      as_restricted_role do
+        expect(db[:documents].update(name: "renamed")).to eq(1)
+        expect(db[:documents].delete).to eq(1)
+      end
     end
-    described_class.apply_user(SuperAuthRlsSpecSystemUser.new(1))
-    expect(doc_names).to eq(["doc2"])
+    expect(become(system: true) { doc_names }).to eq(["doc2"])
   end
 
-  it "blocks INSERT without an authorization" do
-    described_class.clear
+  it "blocks INSERT without an identity assertion" do
     expect {
       as_restricted_role { db[:documents].insert(name: "doc3") }
     }.to raise_error(Sequel::DatabaseError, /row-level security/)
@@ -127,14 +156,14 @@ RSpec.describe SuperAuth::RLS do
 
   it "allows INSERT (with RETURNING) under a type-level authorization" do
     grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
-    described_class.apply_user(SuperAuthRlsSpecUser.new(42))
-    id = as_restricted_role { db[:documents].insert(name: "doc3") }
-    expect(id).to be_a(Integer)
-    expect(doc_names).to eq(["doc1", "doc2", "doc3"])
+    become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+      id = as_restricted_role { db[:documents].insert(name: "doc3") }
+      expect(id).to be_a(Integer)
+      expect(doc_names).to eq(["doc1", "doc2", "doc3"])
+    end
   end
 
   it "restores full visibility after disable" do
-    described_class.clear
     described_class.disable(:documents)
     expect(doc_names).to eq(["doc1", "doc2"])
   end
@@ -143,19 +172,22 @@ RSpec.describe SuperAuth::RLS do
     expect { described_class.enable(:documents, resource_type: "Document") }.not_to raise_error
   end
 
-  describe "SuperAuth.current_user= integration" do
-    it "mirrors identity into session settings when SuperAuth.rls is on" do
+  describe "SuperAuth.as" do
+    it "asserts an external user's identity for the block" do
       grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
-      SuperAuth.rls = true
-      SuperAuth.current_user = SuperAuthRlsSpecUser.new(42)
-      expect(doc_names).to eq(["doc1"])
-      SuperAuth.current_user = nil
+      names = SuperAuth.as(SuperAuthRlsSpecUser.new(42)) { doc_names }
+      expect(names).to eq(["doc1"])
       expect(doc_names).to eq([])
     end
 
-    it "does not touch the database when SuperAuth.rls is off" do
-      expect(described_class).not_to receive(:apply_user)
-      SuperAuth.current_user = SuperAuthRlsSpecUser.new(42)
+    it "matches internal SuperAuth users on user_id" do
+      user = SuperAuth::User.create(name: "internal")
+      grant(user_id: user.id, resource_external_id: doc2_id)
+      expect(SuperAuth.as(user) { doc_names }).to eq(["doc2"])
+    end
+
+    it "bypasses the policy for system users" do
+      expect(SuperAuth.as(SuperAuthRlsSpecSystemUser.new(1)) { doc_names }).to eq(["doc1", "doc2"])
     end
   end
 
