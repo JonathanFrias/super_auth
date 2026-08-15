@@ -3,7 +3,7 @@ Sequel.migration do
     create_table(:super_auth_authorizations) do
       Integer :user_id, null: true
       String :user_name, null: true
-      String :user_external_id, null: true
+      column :user_external_id, SuperAuth.sequel_external_id_type, null: true
       String :user_external_type, null: true
       DateTime :user_created_at, null: true
       DateTime :user_updated_at, null: true
@@ -28,7 +28,7 @@ Sequel.migration do
       DateTime :permission_updated_at, null: true
       Integer :resource_id, null: true
       String :resource_name, null: true
-      String :resource_external_id, null: true
+      column :resource_external_id, SuperAuth.sequel_external_id_type, null: true
       String :resource_external_type, null: true
       DateTime :created_at, null: false, default: Sequel::CURRENT_TIMESTAMP
       DateTime :updated_at, null: false, default: Sequel::CURRENT_TIMESTAMP

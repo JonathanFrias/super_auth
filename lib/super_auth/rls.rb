@@ -33,11 +33,11 @@ module SuperAuth
             OR EXISTS (
               SELECT 1 FROM super_auth_authorizations a
               WHERE a.resource_external_type = #{db.literal(resource_type.to_s)}
-                AND (a.resource_external_id IS NULL OR a.resource_external_id = #{t}.id::text)
+                AND (a.resource_external_id IS NULL OR a.resource_external_id = #{t}.id)
                 AND (
                   a.user_id::text = NULLIF(current_setting('super_auth.user_id', true), '')
                   OR (
-                    a.user_external_id = NULLIF(current_setting('super_auth.user_external_id', true), '')
+                    a.user_external_id::text = NULLIF(current_setting('super_auth.user_external_id', true), '')
                     AND a.user_external_type = NULLIF(current_setting('super_auth.user_external_type', true), '')
                   )
                 )
