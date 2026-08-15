@@ -5,6 +5,9 @@ RSpec.describe SuperAuth do
   let(:db) { SuperAuth.db }
 
   around do |example|
+    # These specs use integer-pk app tables, so install with matching
+    # external id columns (what a real int-pk app configures).
+    SuperAuth.external_id_type = :bigint
     SuperAuth.install_migrations
     SuperAuth.load
     SuperAuth::ActiveRecord::Edge.delete_all
@@ -32,6 +35,8 @@ RSpec.describe SuperAuth do
     example.run
 
     SuperAuth.uninstall_migrations
+  ensure
+    SuperAuth.external_id_type = :string
   end
 
   let(:resource_class) do
@@ -108,38 +113,33 @@ RSpec.describe SuperAuth do
     let(:external_instance) { external_user_resource.create(name: "external user") }
 
     it "Can load the activerecord module" do
-      record = resource_class.create!(name: "mine")
-      SuperAuth::ActiveRecord::Authorization.create!(
-        user_id: SuperAuth.current_user.id,
-        resource_external_type: "Resource",
-        resource_external_id: record.id.to_s
-      )
-
-      # The scope resolves the user's authorized ids and filters to them
+      # Verify SQL structure rather than exact string match (database-agnostic)
       sql = resource_class.limit(10).to_sql
 
       expect(sql).to include("SELECT")
       expect(sql).to include("resources")
-      expect(sql).to include(record.id.to_s)
+      expect(sql).to include("super_auth_authorizations")
+      expect(sql).to include("resource_external_id")
+      expect(sql).to include("user_id")
+      expect(sql).to include(SuperAuth.current_user.id.to_s)
+      expect(sql).to include("Resource")
       expect(sql).to include("LIMIT 10")
     end
 
     it "allows logging in with the external user" do
       SuperAuth.current_user = external_user_resource.create(name: "external user")
-      record = resource_class.create!(name: "mine")
-      SuperAuth::ActiveRecord::Authorization.create!(
-        user_external_id: SuperAuth.current_user.id.to_s,
-        user_external_type: "ExternalUser",
-        resource_external_type: "Resource",
-        resource_external_id: record.id.to_s
-      )
 
-      # The scope resolves the user's authorized ids and filters to them
+      # Verify SQL structure rather than exact string match (database-agnostic)
       sql = resource_class.limit(10).to_sql
 
       expect(sql).to include("SELECT")
       expect(sql).to include("resources")
-      expect(sql).to include(record.id.to_s)
+      expect(sql).to include("super_auth_authorizations")
+      expect(sql).to include("resource_external_id")
+      expect(sql).to include("user_external_id")
+      expect(sql).to include(SuperAuth.current_user.id.to_s)
+      expect(sql).to include("ExternalUser")
+      expect(sql).to include("Resource")
       expect(sql).to include("LIMIT 10")
     end
 

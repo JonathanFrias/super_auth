@@ -3,7 +3,7 @@ Sequel.migration do
     create_table(:super_auth_resources) do
       primary_key :id
       String :name
-      String :external_id # , null: false
+      column :external_id, SuperAuth.sequel_external_id_type # , null: false
       String :external_type # , null: false
       DateTime :created_at, null: false, default: Sequel::CURRENT_TIMESTAMP
       DateTime :updated_at, null: false, default: Sequel::CURRENT_TIMESTAMP

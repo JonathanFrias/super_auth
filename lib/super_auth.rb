@@ -22,6 +22,26 @@ module SuperAuth
     @missing_user_behavior = behavior
   end
 
+  # Column type for the external id columns (users.external_id,
+  # resources.external_id and their copies on authorizations). Set it to your
+  # application's primary key type (:bigint, :uuid, :string, ...) BEFORE
+  # running the super_auth migrations — the columns are then created with the
+  # matching type and every comparison against your tables' pks is natively
+  # typed, with no casting anywhere. Default :string.
+  def self.external_id_type
+    @external_id_type || :string
+  end
+
+  def self.external_id_type=(type)
+    @external_id_type = type
+  end
+
+  # Sequel migrations take the Ruby String class for varchar; anything else
+  # passes through as the literal database type name.
+  def self.sequel_external_id_type
+    external_id_type == :string ? String : external_id_type
+  end
+
   def self.load
     require "super_auth/authorization"
     require "super_auth/edge"

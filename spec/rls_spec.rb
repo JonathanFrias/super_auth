@@ -37,6 +37,9 @@ RSpec.describe SuperAuth::RLS do
   around do |example|
     skip "Postgres only" unless SuperAuth.db.database_type == :postgres
 
+    # documents uses an integer pk, so install with matching external id
+    # columns — the typed policy comparison depends on it
+    SuperAuth.external_id_type = :bigint
     SuperAuth.install_migrations
     SuperAuth.load
     db.run "CREATE TABLE documents (id serial PRIMARY KEY, name text)"
@@ -50,6 +53,7 @@ RSpec.describe SuperAuth::RLS do
   ensure
     if SuperAuth.db.database_type == :postgres
       SuperAuth.rls = false
+      SuperAuth.external_id_type = :string
       described_class.clear
       db.run "RESET ROLE"
       db.run "DROP TABLE IF EXISTS documents"
@@ -68,26 +72,26 @@ RSpec.describe SuperAuth::RLS do
   end
 
   it "shows only rows the user is authorized for" do
-    grant(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id.to_s)
+    grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
     described_class.apply_user(SuperAuthRlsSpecUser.new(42))
     expect(doc_names).to eq(["doc1"])
   end
 
   it "treats a type-level authorization (resource_external_id NULL) as a wildcard" do
-    grant(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser")
+    grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
     described_class.apply_user(SuperAuthRlsSpecUser.new(42))
     expect(doc_names).to eq(["doc1", "doc2"])
   end
 
   it "does not leak rows to a different user of the same id but different type" do
-    grant(user_external_id: "42", user_external_type: "SomeOtherClass", resource_external_id: doc1_id.to_s)
+    grant(user_external_id: 42, user_external_type: "SomeOtherClass", resource_external_id: doc1_id)
     described_class.apply_user(SuperAuthRlsSpecUser.new(42))
     expect(doc_names).to eq([])
   end
 
   it "matches internal SuperAuth users on user_id" do
     user = SuperAuth::User.create(name: "internal")
-    grant(user_id: user.id, resource_external_id: doc2_id.to_s)
+    grant(user_id: user.id, resource_external_id: doc2_id)
     described_class.apply_user(user)
     expect(doc_names).to eq(["doc2"])
   end
@@ -98,7 +102,7 @@ RSpec.describe SuperAuth::RLS do
   end
 
   it "scopes UPDATE and DELETE to authorized rows" do
-    grant(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id.to_s)
+    grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
     described_class.apply_user(SuperAuthRlsSpecUser.new(42))
     as_restricted_role do
       expect(db[:documents].update(name: "renamed")).to eq(1)
@@ -116,7 +120,7 @@ RSpec.describe SuperAuth::RLS do
   end
 
   it "allows INSERT (with RETURNING) under a type-level authorization" do
-    grant(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser")
+    grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
     described_class.apply_user(SuperAuthRlsSpecUser.new(42))
     id = as_restricted_role { db[:documents].insert(name: "doc3") }
     expect(id).to be_a(Integer)
@@ -135,7 +139,7 @@ RSpec.describe SuperAuth::RLS do
 
   describe "SuperAuth.current_user= integration" do
     it "mirrors identity into session settings when SuperAuth.rls is on" do
-      grant(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id.to_s)
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
       SuperAuth.rls = true
       SuperAuth.current_user = SuperAuthRlsSpecUser.new(42)
       expect(doc_names).to eq(["doc1"])

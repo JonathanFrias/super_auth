@@ -27,16 +27,14 @@ module SuperAuth::ActiveRecord::ByCurrentUser
           self
         else
           # Per-record authorization: filter to specific records the user can
-          # access. resource_external_id is a string column (external ids are
-          # not always integers), so a SQL subquery would compare text against
-          # this model's pk and fail on Postgres. Load the ids instead and let
-          # ActiveRecord cast them against the pk type.
+          # access. No type handling here: the external id columns are created
+          # with the app's pk type (SuperAuth.external_id_type at install
+          # time), so the comparison is natively typed.
           where(
             id: SuperAuth::ActiveRecord::Authorization
                 .where(**user_where, resource_external_type: resource_type)
                 .where.not(resource_external_id: nil)
-                .distinct
-                .pluck(:resource_external_id))
+                .select(:resource_external_id))
         end
       end
     end
