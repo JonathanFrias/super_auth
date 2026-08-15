@@ -52,10 +52,35 @@ See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
 The `ByCurrentUser` scope enforces authorization at the ORM layer. On Postgres you can
 additionally enforce the same rules inside the database itself, so raw SQL, `unscoped`,
 background jobs, and any other client on the same database are subject to them too —
-unauthorized rows become invisible at the connection level. This is also what makes
-super_auth usable as a central authorization service for apps that aren't written in
-Ruby at all: Postgres does the enforcing, so any language that can run SQL can
-participate (see "Enforcing from other apps" below).
+unauthorized rows become invisible at the connection level. Enforcement is pure SQL:
+participating apps don't load this gem, or Ruby, at all. The gem's role is
+administrative — define the graph, compile authorizations, enable the policies — which
+is what makes super_auth usable as a central authorization service for apps in any
+language.
+
+### The contract (any language)
+
+Identity is asserted per transaction by calling the `super_auth_become` function that
+`SuperAuth::RLS.enable` installs:
+
+```sql
+BEGIN;
+SELECT super_auth_become(user_external_id => '42', user_external_type => 'AppUser');
+-- run normal queries; rows the user isn't authorized for don't exist --
+COMMIT;  -- identity dies with the transaction; there is nothing to clear
+```
+
+For a user managed inside super_auth, pass `user_id => '7'` instead; `system => true`
+bypasses the policies (migrations, seeds, admin jobs).
+
+The assertion is anchored to the calling transaction: `super_auth_become` sets
+transaction-local identity settings plus a stamp of the current transaction id, and
+every policy requires a stamp from the current transaction. Outside a transaction the
+settings have already reverted, and identity smuggled in as session settings carries a
+dead transaction's stamp — either way queries return no rows and writes are rejected.
+Misuse fails closed, and the scheme works unchanged behind transaction-pooling proxies
+like pgbouncer, because a transaction is exactly what they keep on one server
+connection.
 
 ### Setup (Rails)
 
@@ -67,7 +92,6 @@ against your tables' pks with no casting, so the columns must share a type:
 # config/initializers/super_auth.rb
 SuperAuth.setup do |config|
   config.external_id_type = :bigint   # Rails' default pk type; use :uuid, :string, ... to match yours
-  config.rls = true                   # mirror current_user into Postgres session settings
 end
 ```
 
@@ -91,7 +115,8 @@ class name when you use the AR integration).
 **3. Connect as a role RLS applies to.** Superusers and `BYPASSRLS` roles skip
 policies entirely, so the app must not connect as one (owning the tables is fine —
 the policies use `FORCE ROW LEVEL SECURITY`). The role needs `SELECT` on
-`super_auth_authorizations`, which the policies read:
+`super_auth_authorizations`, which the policies read; `EXECUTE` on
+`super_auth_become` is granted to `PUBLIC` by default, so no extra grant is needed:
 
 ```sql
 CREATE ROLE app_runtime LOGIN PASSWORD '...';
@@ -99,53 +124,36 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON documents, invoices TO app_runtime;
 GRANT SELECT ON super_auth_authorizations TO app_runtime;
 ```
 
-That's it. `SuperAuth.current_user=` now mirrors identity into Postgres session
-settings, each policy checks `super_auth_authorizations` with the same semantics as
-`ByCurrentUser` — type-level authorizations (`resource_external_id IS NULL`) act as a
-wildcard, per-record authorizations match on id, `system?` users bypass — and the
-Railtie clears identity at the start of every request/job so pooled connections
-cannot leak the previous user.
+**4. Wrap work in an identity assertion.** In Ruby:
 
-### Enforcing from other apps (any language)
-
-Administration — creating users, groups, roles, edges, and compiling them into
-`super_auth_authorizations` — stays with this gem (Rails or plain Ruby; the core is
-Sequel and needs no Rails). Enforcement does not: once the policies exist, any client
-of the database participates by setting four text session settings per request.
-
-For an external user (your app's own user records):
-
-```sql
-SELECT set_config('super_auth.user_external_id', '42', false),
-       set_config('super_auth.user_external_type', 'AppUser', false);
-
--- run normal queries; rows the user isn't authorized for don't exist --
-
-SELECT set_config('super_auth.user_external_id', '', false),
-       set_config('super_auth.user_external_type', '', false);  -- clear before reusing the connection
+```ruby
+SuperAuth.as(current_user) do
+  # every query in here is enforced by the database
+end
 ```
 
-For a user managed inside super_auth, set `super_auth.user_id` (its integer id)
-instead. Setting `super_auth.system` to `'true'` bypasses the policies (migrations,
-seeds, admin jobs). Unset or empty settings mean no identity: queries return nothing.
-
-Pass `true` as `set_config`'s third argument inside a transaction to scope identity
-to that transaction instead of the session — then no clearing is needed, and it is
-also the only mode that works behind transaction-pooling proxies like pgbouncer.
+`SuperAuth.as` opens a transaction and calls `super_auth_become` for you — use it in
+an `around_action` (or around a job) to cover a whole request. Non-Ruby apps use the
+SQL contract directly. Each policy checks `super_auth_authorizations` with the same
+semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
+act as a wildcard, per-record authorizations match on id, `system?` users bypass.
 
 ### Notes
 
+- Queries with no identity asserted see nothing, and writes are rejected — fail
+  closed, by design. A client that has never heard of super_auth cannot accidentally
+  reach protected rows.
 - Creating rows requires a type-level authorization for that resource type (or system
-  context): Postgres applies the visibility policy to `INSERT ... RETURNING`, which
-  ActiveRecord and Sequel use to fetch new ids, so a row its creator couldn't see
-  can't be inserted.
-- Session-scoped identity assumes one connection pinned per thread per request (the
-  standard Rails model). Behind a transaction-mode pooler, use transaction-scoped
-  `set_config` as above; the Rails integration does not support that mode.
+  context): the policy is `FOR ALL` with no `WITH CHECK`, so Postgres reuses its
+  `USING` expression as the implicit `WITH CHECK` for INSERTs and UPDATEs.
+- The transaction stamp calls `pg_current_xact_id()`, which assigns a real transaction
+  id even to read-only transactions — one extra xid per protected transaction.
+  Negligible for almost everyone; revisit with a virtual-xid variant only if
+  transaction id churn ever matters at extreme read volume.
 - One `external_id_type` covers the whole install, so every protected table across
   every participating app needs the same pk type.
-- Postgres only. On other databases `SuperAuth::RLS` raises, and the ORM scope
-  remains the enforcement layer.
+- Postgres 13+ only (`pg_current_xact_id`). On other databases `SuperAuth::RLS`
+  raises, and the ORM scope remains the enforcement layer.
 
 ## Configuration
 

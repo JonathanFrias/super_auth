@@ -94,20 +94,15 @@ module SuperAuth
     raise Error, "Failed to uninstall migrations: #{e.message}"
   end
 
-  # When true, current_user= also mirrors identity into Postgres session
-  # settings so RLS policies (see SuperAuth::RLS) can enforce authorization
-  # inside the database.
-  def self.rls
-    @rls || false
-  end
-
-  def self.rls=(value)
-    @rls = value
+  # Run the block with `user`'s identity asserted inside a database
+  # transaction, so RLS policies (see SuperAuth::RLS) enforce authorization
+  # for every query in the block. Postgres only.
+  def self.as(user, db: SuperAuth.db, &block)
+    SuperAuth::RLS.as(user, db: db, &block)
   end
 
   def self.current_user=(user)
     Thread.current[:super_auth_current_user] = user
-    SuperAuth::RLS.apply_user(user) if rls
   end
 
   def self.current_user
