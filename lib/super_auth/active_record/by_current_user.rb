@@ -26,16 +26,17 @@ module SuperAuth::ActiveRecord::ByCurrentUser
         if type_level.exists?
           self
         else
-          # Per-record authorization: filter to specific records the user can access.
-          # Cast the pk to text: resource_external_id is a string column, and
-          # Postgres refuses integer = text (SQLite coerces silently).
-          per_record = SuperAuth::ActiveRecord::Authorization
-            .where(**user_where, resource_external_type: resource_type)
-            .where.not(resource_external_id: nil)
-            .select(:resource_external_id)
-          cast_type = model.connection.adapter_name.match?(/mysql/i) ? "CHAR" : "TEXT"
-          quoted_pk = "#{model.connection.quote_table_name(model.table_name)}.#{model.connection.quote_column_name(model.primary_key)}"
-          where("CAST(#{quoted_pk} AS #{cast_type}) IN (#{per_record.to_sql})")
+          # Per-record authorization: filter to specific records the user can
+          # access. resource_external_id is a string column (external ids are
+          # not always integers), so a SQL subquery would compare text against
+          # this model's pk and fail on Postgres. Load the ids instead and let
+          # ActiveRecord cast them against the pk type.
+          where(
+            id: SuperAuth::ActiveRecord::Authorization
+                .where(**user_where, resource_external_type: resource_type)
+                .where.not(resource_external_id: nil)
+                .distinct
+                .pluck(:resource_external_id))
         end
       end
     end
