@@ -8,7 +8,9 @@ module SuperAuth
 
       source_root File.expand_path('templates', __dir__)
 
-      argument :models, type: :array, banner: "Model Model ..."
+      # The model class names typed on the command line, verbatim:
+      # `rails g super_auth:rls Document Invoice` => ["Document", "Invoice"]
+      argument :model_names, type: :array, banner: "Model Model ..."
 
       desc "Creates a migration enabling Postgres row-level security for the given models"
 
