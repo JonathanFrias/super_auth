@@ -377,32 +377,31 @@ Resource::ResourceRestartPermission.find(id) # needs its own explicit approval
 
 Grants are per class in both directions: a `"Resource"` grant does not unlock the subclass, and a `"Resource::ResourceRestartPermission"` grant does not unlock the base class.
 
-## Postgres Row-Level Security
+## Row-Level Security for permission-gated models
 
-For defense in depth on Postgres (13+), SuperAuth can enforce the same rules inside the database:
-
-```ruby
-# List every class the table's rows are keyed by — nothing is inferred.
-SuperAuth::RLS.enable(:resources,
-  resource_type: ["Resource", "Resource::ResourceRestartPermission"])
-```
-
-`enable` turns on `ROW LEVEL SECURITY` (with `FORCE`, so the table owner is covered too) and installs a policy that derives visibility from `super_auth_authorizations` for the current user. There is nothing extra to supply at query time — the `SuperAuth.current_user` assignment your `before_action` already makes anchors the identity on the database connection, and every query after it is filtered:
+For defense in depth on Postgres (13+), enable a policy on the table. It is keyed by a single resource type — the base class's name — and enforces *row visibility* using the same [contract described above](#postgres-row-level-security-optional):
 
 ```ruby
-SuperAuth.current_user = user
-SuperAuth.db[:resources].all   # only rows the user holds a grant on
-
-SuperAuth.current_user = nil   # policy matches nothing again
+SuperAuth::RLS.enable(:resources, resource_type: "Resource")
 ```
 
-Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`). Type-level wildcard grants (`resource_external_id IS NULL`) behave exactly like the ActiveRecord scope, and the system user bypasses the policy just like the ORM layer. A row is visible when the user holds a grant against *any* of the listed resource types — row-level security cannot tell which Ruby class issued a query, so per-class enforcement remains the ORM scope's job. `SuperAuth::RLS.disable(:resources)` removes the policy.
+`enable` turns on `ROW LEVEL SECURITY` (with `FORCE`, so the table owner is covered too) and installs a policy that derives visibility from `super_auth_authorizations`. Identity is asserted **per transaction, not per connection**: wrap the work in `SuperAuth.as`, which opens a transaction and calls `super_auth_become` for you (see the contract above). Every query inside is filtered, and the identity dies with the transaction:
+
+```ruby
+SuperAuth.as(current_user) do
+  SuperAuth.db[:resources].all   # only rows current_user holds a grant on
+end
+# outside the block there is no asserted identity, so the policy matches nothing
+```
+
+Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`); type-level wildcard grants (`resource_external_id IS NULL`) and the system user behave exactly as they do in the ActiveRecord scope. `SuperAuth::RLS.disable(:resources)` removes the policy.
+
+Because a policy sees only the table, not which Ruby class issued the query, row-level security enforces access to the **base** resource type: a `"Resource"` grant makes the row visible in the database, but the policy cannot distinguish the `"Resource::ResourceRestartPermission"` subclass. Per-class (capability) enforcement therefore stays with the ORM scope — the database is the row-visibility backstop, the client gates the capability.
 
 Notes:
 
-- Until a current user is assigned, the policy matches nothing (deny by default).
-- The identity lives on the database connection — assign `SuperAuth.current_user` at the start of each request/job (the standard `before_action` pattern), which overwrites whatever a previous checkout left behind.
-- Postgres superusers always bypass row-level security — run your application as a regular role.
+- With no `SuperAuth.as` assertion in effect, the policy matches nothing (deny by default) and writes are rejected — fail closed.
+- Postgres superusers and `BYPASSRLS` roles bypass row-level security entirely — run your application as a regular role (see the setup guide above).
 
 ## Development
 
