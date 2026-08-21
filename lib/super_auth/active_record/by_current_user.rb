@@ -1,4 +1,24 @@
 module SuperAuth::ActiveRecord::ByCurrentUser
+  # Records are filtered to those the current user holds an authorization for,
+  # keyed by the querying class's name. Because a subclass is its own resource
+  # type, privileged methods can be placed on a subclass whose access must be
+  # approved explicitly — a grant on the base class does not flow down:
+  #
+  #   class Resource < ApplicationRecord
+  #     super_auth
+  #
+  #     class ResourceRestartPermission < Resource
+  #       def restart!
+  #         # dangerous restart operation
+  #       end
+  #     end
+  #   end
+  #
+  # Resource::ResourceRestartPermission shares the base class's table and rows,
+  # but loading it requires an authorization whose resource_external_type is
+  # "Resource::ResourceRestartPermission" (edges to a SuperAuth::Resource
+  # registered with that external_type). If you can't load the object, you
+  # can't call the method.
   def self.included(base)
     base.send(:default_scope, **{all_queries: true}) do
       if SuperAuth.current_user.blank?
@@ -38,8 +58,5 @@ module SuperAuth::ActiveRecord::ByCurrentUser
         end
       end
     end
-  end
-
-  module ClassMethods
   end
 end

@@ -436,6 +436,29 @@ SuperAuth.current_user = SuperAuth::User.system
 Post.all  # Returns all posts
 ```
 
+### Permission-gated subclasses
+
+Every class is authorized by its own name, so privileged methods belong on a subclass: it shares the base class's table and rows, but loading it requires its own explicitly approved grant — access never flows between base and subclass in either direction:
+
+```ruby
+class Post < ApplicationRecord
+  super_auth
+
+  class PostPublishPermission < Post
+    def publish!
+      update!(published: true)
+    end
+  end
+end
+
+Post.find(id)                        # needs a "Post" grant
+Post::PostPublishPermission.find(id) # needs a "Post::PostPublishPermission" grant
+```
+
+Approve the subclass like any other resource — register a `SuperAuth::Resource` with `external_type: "Post::PostPublishPermission"` and draw edges to it, then recompile with `SuperAuth::ActiveRecord::Authorization.compile!`.
+
+For database-side enforcement of the same rules see "Postgres Row-Level Security" in the README (`SuperAuth::RLS.enable` — visibility is derived automatically from `SuperAuth.current_user`).
+
 ### Linking to your app's models
 
 Connect SuperAuth entities to your ActiveRecord models via `external_id` and `external_type`:
