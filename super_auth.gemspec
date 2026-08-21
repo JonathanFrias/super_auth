@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.summary = "Make Unauthenticated State Unrepresentable"
   spec.description = "Simple, yet super powerful authorization for you application"
   spec.homepage = "https://github.com/JonathanFrias/super_auth"
-  spec.license = "MIT"
+  spec.license = "GPL-2.0"
   spec.required_ruby_version = ">= 2.6.0"
 
   spec.metadata["homepage_uri"] = spec.homepage
