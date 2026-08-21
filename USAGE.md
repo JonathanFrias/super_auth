@@ -639,4 +639,4 @@ auths = SuperAuth::Edge.authorizations.all
 
 ## License
 
-SuperAuth is available as open source under the [GPL License](https://www.gnu.org/licenses/quick-guide-gplv3.html).
+SuperAuth is available as open source under the [GPL v2 License](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).

@@ -2,13 +2,15 @@
 
 [![Build Status](https://github.com/JonathanFrias/super_auth/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/JonathanFrias/super_auth/actions)
 
-Super auth is turn-key authorization gem that makes unauthorized access unrepresentable. **Stop writing tests for authorization with confidence**
+Super auth is a turn-key authorization engine that makes unauthorized access unrepresentable — enforced in your database, so the same rules protect every client, in any language, that touches your data. **Stop writing authorization tests; enforce access with confidence.**
 
-The intent is to use with ruby applications, as well as centralize authorization for multiple applications. If you look at the [OWASP top vulnerabilty](https://owasp.org/Top10/A01_2021-Broken_Access_Control/), broken
-access control is the NUMBER 1 most common security risk in modern applications today. super_auth provides a authentication strategy that allows you to completely de-risk your application, solving this issue once confidently.
+The intent is to centralize authorization for one application or many, in any language. If you look at the [OWASP top vulnerability](https://owasp.org/Top10/A01_2021-Broken_Access_Control/), broken
+access control is the NUMBER 1 most common security risk in modern applications today. super_auth provides an authorization model that lets you de-risk your application, solving this issue once, confidently.
 
 
 ## Installation
+
+SuperAuth enforces authorization in the database, so any language can participate. The reference client is the Ruby gem:
 
     gem "super_auth"
 
@@ -124,6 +126,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON documents, invoices TO app_runtime;
 GRANT SELECT ON super_auth_authorizations TO app_runtime;
 ```
 
+> ⚠️ **This is the one step that, if skipped, silently disables all protection.**
+> PostgreSQL *always* lets **superusers** and roles with the **`BYPASSRLS`** attribute
+> bypass row-level security. `FORCE ROW LEVEL SECURITY` only subjects the table *owner*
+> to the policies — it does **not** constrain a superuser. So if your app connects to
+> Postgres as a superuser (the default in many local setups and some managed hosts), the
+> policies apply to nobody and every row stays visible, while everything *looks* like it
+> is working. Always connect as a dedicated non-superuser, non-`BYPASSRLS` role such as
+> `app_runtime` above. SuperAuth's language-specific clients check this on startup and
+> warn you when the connection is able to bypass RLS.
+
 **4. Wrap work in an identity assertion.** In Ruby:
 
 ```ruby
@@ -189,6 +201,9 @@ SuperAuth is a rules engine engine that works on 5 different authorization conce
 The basis for how this works is that the rules engine is trying to match a user with a resource to determine access.
 The engine determines if it can find an authorization route betewen a user and a resource. It does so by looking at users, groups, roles, permissions.
 
+                          +---+           +---+
+                          |   |           |   |      (Group nests within Group,
+                          |   v           |   v       Role nests within Role)
                          +-------+       +------+
                          | Group |<----->| Role |
                          +-------+\    / +------+
@@ -206,7 +221,9 @@ The engine determines if it can find an authorization route betewen a user and a
 
 
 The lines between the boxes are called [edges](https://en.wikipedia.org/wiki/Glossary_of_graph_theory#edge).
-Note that `Group` and `Role` trees.
+The self-loops on `Group` and `Role` mean each nests within itself: a `Group` can contain
+child `Group`s and a `Role` can contain child `Role`s, recursively. Grants on a parent
+flow to every descendant — which is why `Group` and `Role` are described as *trees*.
 
 In general the super_auth has 5 different pathing strategies to search for access.
 
@@ -399,4 +416,4 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/Jonath
 
 ## License
 
-The gem is available as open source under the terms of the [GPL](https://www.gnu.org/licenses/quick-guide-gplv3.html).
+The gem is available as open source under the terms of the [GPL v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
