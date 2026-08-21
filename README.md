@@ -163,6 +163,11 @@ SuperAuth.setup do |config|
   # Raise an error when a query runs without a current user set.
   # Default is :none (returns empty results silently).
   config.missing_user_behavior = :raise
+
+  # Column type for external id columns, applied when the migrations run. Set
+  # it to your application's primary key type (:bigint, :uuid, :string, ...) so
+  # authorization comparisons are natively typed. Default is :string.
+  config.external_id_type = :bigint
 end
 ```
 
@@ -318,6 +323,69 @@ When you create/delete an edge new authorizations are generated and stored in th
 Since the path is stored with the record, it trivial to audit access permissions using basic SQL.
 
 TODO: Write usage instructions here
+
+## Permission-Gated Models
+
+Every class is authorized by its own name — nothing is derived, and a grant on one class never flows to another. That makes a subclass the natural home for privileged methods: it shares the base class's table and rows, but loading it requires its own, explicitly approved grant. If you can't load the object, you can't call its methods.
+
+```ruby
+class Resource < ApplicationRecord
+  super_auth
+  # Loadable by users granted the "Resource" resource type.
+
+  class ResourceRestartPermission < Resource
+    # Loadable ONLY by users granted "Resource::ResourceRestartPermission".
+    def restart!
+      # dangerous restart operation
+    end
+  end
+end
+```
+
+Approve access to the subclass the same way as any other resource — register it by its class name and draw edges to it:
+
+```ruby
+restartable = SuperAuth::Resource.create(
+  name: "restartable servers",
+  external_type: "Resource::ResourceRestartPermission"
+)
+restart = SuperAuth::Permission.create(name: "restart")
+SuperAuth::Edge.create(user: sa_user, permission: restart)
+SuperAuth::Edge.create(permission: restart, resource: restartable)
+SuperAuth::ActiveRecord::Authorization.compile!
+
+Resource.find(id)                            # needs a "Resource" grant
+Resource::ResourceRestartPermission.find(id) # needs its own explicit approval
+```
+
+Grants are per class in both directions: a `"Resource"` grant does not unlock the subclass, and a `"Resource::ResourceRestartPermission"` grant does not unlock the base class.
+
+## Postgres Row-Level Security
+
+For defense in depth on Postgres (13+), SuperAuth can enforce the same rules inside the database:
+
+```ruby
+# List every class the table's rows are keyed by — nothing is inferred.
+SuperAuth::RLS.enable(:resources,
+  resource_type: ["Resource", "Resource::ResourceRestartPermission"])
+```
+
+`enable` turns on `ROW LEVEL SECURITY` (with `FORCE`, so the table owner is covered too) and installs a policy that derives visibility from `super_auth_authorizations` for the current user. There is nothing extra to supply at query time — the `SuperAuth.current_user` assignment your `before_action` already makes anchors the identity on the database connection, and every query after it is filtered:
+
+```ruby
+SuperAuth.current_user = user
+SuperAuth.db[:resources].all   # only rows the user holds a grant on
+
+SuperAuth.current_user = nil   # policy matches nothing again
+```
+
+Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`). Type-level wildcard grants (`resource_external_id IS NULL`) behave exactly like the ActiveRecord scope, and the system user bypasses the policy just like the ORM layer. A row is visible when the user holds a grant against *any* of the listed resource types — row-level security cannot tell which Ruby class issued a query, so per-class enforcement remains the ORM scope's job. `SuperAuth::RLS.disable(:resources)` removes the policy.
+
+Notes:
+
+- Until a current user is assigned, the policy matches nothing (deny by default).
+- The identity lives on the database connection — assign `SuperAuth.current_user` at the start of each request/job (the standard `before_action` pattern), which overwrites whatever a previous checkout left behind.
+- Postgres superusers always bypass row-level security — run your application as a regular role.
 
 ## Development
 

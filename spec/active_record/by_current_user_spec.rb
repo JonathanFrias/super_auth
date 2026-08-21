@@ -4,6 +4,17 @@ require "active_record" unless Gem::Specification.find_by_name("activerecord").n
 RSpec.describe SuperAuth do
   let(:db) { SuperAuth.db }
 
+  # The around hook below swaps the external id columns between :integer and
+  # :string, so cached column types must be dropped on the way in and out.
+  def reset_super_auth_column_information
+    return unless defined?(SuperAuth::ActiveRecord::Authorization)
+
+    [SuperAuth::ActiveRecord::Authorization, SuperAuth::ActiveRecord::Edge,
+     SuperAuth::ActiveRecord::Group, SuperAuth::ActiveRecord::Permission,
+     SuperAuth::ActiveRecord::Resource, SuperAuth::ActiveRecord::Role,
+     SuperAuth::ActiveRecord::User].each(&:reset_column_information)
+  end
+
   around do |example|
     # These specs use integer-pk app tables, so install with matching
     # external id columns (what a real int-pk app configures). Earlier spec
@@ -17,6 +28,7 @@ RSpec.describe SuperAuth do
     end
     SuperAuth.install_migrations
     SuperAuth.load
+    reset_super_auth_column_information
     SuperAuth::ActiveRecord::Edge.delete_all
     SuperAuth::ActiveRecord::Group.delete_all
     SuperAuth::ActiveRecord::User.delete_all
@@ -44,6 +56,7 @@ RSpec.describe SuperAuth do
     SuperAuth.uninstall_migrations
   ensure
     SuperAuth.external_id_type = :string
+    reset_super_auth_column_information
   end
 
   let(:resource_class) do
@@ -220,6 +233,81 @@ RSpec.describe SuperAuth do
 
       results = resource_class.all.to_a
       expect(results).to be_empty
+    end
+  end
+
+  context "permission-gated subclasses" do
+    let(:restart_class) do
+      Class.new(resource_class) do
+        def self.name
+          "ResourceRestartPermission"
+        end
+
+        def restart!
+          "restarted"
+        end
+      end
+    end
+
+    before do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.create(name: "operator")
+      resource_class.unscoped.delete_all
+    end
+
+    it "queries authorizations by the subclass's own name" do
+      sql = restart_class.limit(1).to_sql
+
+      expect(sql).to include("ResourceRestartPermission")
+    end
+
+    it "does not let base class grants flow down to the subclass" do
+      record = resource_class.create!(name: "server")
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "Resource",
+        resource_external_id: record.id.to_s
+      )
+
+      expect(resource_class.all.map(&:id)).to eq([record.id])
+      expect(restart_class.all.to_a).to be_empty
+      expect { restart_class.find(record.id) }.to raise_error(ActiveRecord::RecordNotFound)
+    end
+
+    it "loads the subclass once access is approved explicitly" do
+      record = resource_class.create!(name: "server")
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "ResourceRestartPermission",
+        resource_external_id: record.id.to_s
+      )
+
+      expect(restart_class.find(record.id).restart!).to eq("restarted")
+      # The subclass grant does not flow up to the base class either.
+      expect(resource_class.all.to_a).to be_empty
+    end
+
+    it "approves subclass access via the edge graph" do
+      record = resource_class.create!(name: "server")
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: "restart")
+      resource = SuperAuth::ActiveRecord::Resource.create!(
+        name: "restartable servers", external_id: record.id, external_type: "ResourceRestartPermission"
+      )
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, permission:)
+      SuperAuth::ActiveRecord::Edge.create!(permission:, resource:)
+      SuperAuth::ActiveRecord::Authorization.compile!
+
+      expect(restart_class.find(record.id).restart!).to eq("restarted")
+    end
+
+    it "supports type-level approval of the subclass" do
+      record = resource_class.create!(name: "server")
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id,
+        resource_external_type: "ResourceRestartPermission",
+        resource_external_id: nil
+      )
+
+      expect(restart_class.all.map(&:id)).to eq([record.id])
     end
   end
 end

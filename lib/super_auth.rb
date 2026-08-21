@@ -50,6 +50,7 @@ module SuperAuth
     require "super_auth/permission"
     require "super_auth/railtie"
     require "super_auth/resource"
+    require "super_auth/rls"
     require "super_auth/role"
     require "super_auth/user"
     require "super_auth/active_record" if defined?(ActiveRecord::Base)
