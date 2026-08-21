@@ -163,6 +163,117 @@ RSpec.describe SuperAuth::RLS do
     end
   end
 
+  # `DELETE FROM documents` with no WHERE clause — what a buggy script, a
+  # compromised client, or `Model.unscoped.delete_all` would issue. The policy
+  # must scope it to rows the asserted identity can see, and to nothing at all
+  # when no identity was asserted in the current transaction.
+  describe "unfiltered DELETE" do
+    def surviving_docs
+      become(system: true) { doc_names }
+    end
+
+    it "deletes nothing without an identity assertion" do
+      expect(as_restricted_role { db[:documents].delete }).to eq(0)
+      expect(surviving_docs).to eq(["doc1", "doc2"])
+    end
+
+    it "deletes nothing after the asserting transaction has committed" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
+      become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") {}
+      expect(as_restricted_role { db[:documents].delete }).to eq(0)
+      expect(surviving_docs).to eq(["doc1", "doc2"])
+    end
+
+    it "deletes nothing under session-scoped identity leaked from a previous transaction" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
+      settings = {
+        "super_auth.user_id" => "",
+        "super_auth.user_external_id" => "42",
+        "super_auth.user_external_type" => "SuperAuthRlsSpecUser",
+        "super_auth.system" => "",
+      }
+      db.transaction do
+        settings.each { |name, value| db.get(Sequel.function(:set_config, name, value, false)) }
+        db.get(Sequel.function(:set_config, "super_auth.xid", Sequel.function(:pg_current_xact_id).cast(:text), false))
+      end
+      expect(as_restricted_role { db[:documents].delete }).to eq(0)
+      expect(surviving_docs).to eq(["doc1", "doc2"])
+    ensure
+      if settings && SuperAuth.db.database_type == :postgres
+        (settings.keys + ["super_auth.xid"]).each do |name|
+          db.get(Sequel.function(:set_config, name, "", false))
+        end
+      end
+    end
+
+    it "deletes nothing for an identity granted only under a different user type" do
+      grant(user_external_id: 42, user_external_type: "SomeOtherClass")
+      deleted = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+        as_restricted_role { db[:documents].delete }
+      end
+      expect(deleted).to eq(0)
+      expect(surviving_docs).to eq(["doc1", "doc2"])
+    end
+
+    it "deletes only the granted row under a per-record authorization" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+      deleted = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+        as_restricted_role { db[:documents].delete }
+      end
+      expect(deleted).to eq(1)
+      expect(surviving_docs).to eq(["doc2"])
+    end
+
+    it "returns only the granted row from DELETE ... RETURNING" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+      rows = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+        as_restricted_role { db[:documents].returning(:name).delete }
+      end
+      expect(rows).to eq([{ name: "doc1" }])
+      expect(surviving_docs).to eq(["doc2"])
+    end
+
+    it "scopes a DELETE smuggled through a data-modifying CTE" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+      deleted = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+        as_restricted_role do
+          db.fetch("WITH gone AS (DELETE FROM documents RETURNING name) SELECT name FROM gone").map(:name)
+        end
+      end
+      expect(deleted).to eq(["doc1"])
+      expect(surviving_docs).to eq(["doc2"])
+    end
+
+    it "scopes ActiveRecord unscoped.delete_all the same way" do
+      skip "requires the sequel-activerecord_connection bridge" unless db.respond_to?(:activerecord_model)
+      document_model = Class.new(::ActiveRecord::Base) { self.table_name = "documents" }
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+      deleted = SuperAuth.as(SuperAuthRlsSpecUser.new(42)) do
+        as_restricted_role { document_model.unscoped.delete_all }
+      end
+      expect(deleted).to eq(1)
+      expect(surviving_docs).to eq(["doc2"])
+    end
+
+    it "lets a type-level wildcard delete every row" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser")
+      deleted = become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser") do
+        as_restricted_role { db[:documents].delete }
+      end
+      expect(deleted).to eq(2)
+      expect(surviving_docs).to eq([])
+    end
+
+    it "cannot be escalated to TRUNCATE, which RLS does not police" do
+      # Privileges are checked before RLS, so no asserted identity changes
+      # this: safety rests on the grant set withholding TRUNCATE.
+      expect {
+        as_restricted_role { db.run "TRUNCATE documents" }
+      }.to raise_error(Sequel::DatabaseError, /permission denied/)
+      expect(surviving_docs).to eq(["doc1", "doc2"])
+    end
+  end
+
   it "restores full visibility after disable" do
     described_class.disable(:documents)
     expect(doc_names).to eq(["doc1", "doc2"])
