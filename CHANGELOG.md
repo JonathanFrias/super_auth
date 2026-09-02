@@ -2,6 +2,10 @@
 
 ## [0.4.0] - 2026-09-02
 
+### Security
+
+- Fix: path strategy 1 (users <-> groups <-> roles <-> permissions <-> resources) granted every role held by any group to the members of every group that held a role. `SuperAuth::Edge.users_groups_roles_permissions_resources` built one set of all role-holding groups and one set of all group-held roles and cross-joined them with nothing correlating a group to its own role. The role lookup is now joined through the member's own group ancestry, so a role attached to one group never reaches members of an unrelated group. Affects `SuperAuth::Edge.authorizations` and anything compiled from it (`SuperAuth::ActiveRecord::Authorization.compile!`); recompile authorizations after upgrading.
+
 ### Added
 
 - Postgres row-level security enforcement (`SuperAuth::RLS`, `rails g super_auth:rls Model ...`). Identity is anchored to the transaction by the `super_auth_become()` SQL function, exposed in Ruby as `SuperAuth.as(user) { ... }`, so non-Ruby clients get the same enforcement.
