@@ -30,9 +30,13 @@ RSpec.describe SuperAuth do
     SuperAuth.load
     reset_super_auth_column_information
     SuperAuth::ActiveRecord::Edge.delete_all
+    # MySQL checks the self-referencing parent_id key row by row, so detach
+    # children before deleting the tree tables.
+    SuperAuth::ActiveRecord::Group.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Group.delete_all
     SuperAuth::ActiveRecord::User.delete_all
     SuperAuth::ActiveRecord::Permission.delete_all
+    SuperAuth::ActiveRecord::Role.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Role.delete_all
     SuperAuth::ActiveRecord::Resource.delete_all
 
