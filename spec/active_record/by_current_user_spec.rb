@@ -310,4 +310,55 @@ RSpec.describe SuperAuth do
       expect(restart_class.all.map(&:id)).to eq([record.id])
     end
   end
+
+  context "cross-group role isolation through the compiled table" do
+    # Two orgs, each with its own reps group holding its own role. The scope
+    # must hand each rep only the record their own org's role reaches.
+    before do
+      @alice = SuperAuth::ActiveRecord::User.create(name: "alice")
+      @bob = SuperAuth::ActiveRecord::User.create(name: "bob")
+      SuperAuth.current_user = @alice
+      resource_class.unscoped.delete_all
+      @record_a = resource_class.create!(name: "org1 claim")
+      @record_b = resource_class.create!(name: "org2 claim")
+
+      org1 = SuperAuth::ActiveRecord::Group.create(name: "Org1")
+      org1_reps = SuperAuth::ActiveRecord::Group.create(name: "Org1/Reps", parent: org1)
+      org2 = SuperAuth::ActiveRecord::Group.create(name: "Org2")
+      org2_reps = SuperAuth::ActiveRecord::Group.create(name: "Org2/Reps", parent: org2)
+      role1 = SuperAuth::ActiveRecord::Role.create(name: "Org1 Rep Role")
+      role2 = SuperAuth::ActiveRecord::Role.create(name: "Org2 Rep Role")
+      write1 = SuperAuth::ActiveRecord::Permission.create(name: "org1:claim_write")
+      write2 = SuperAuth::ActiveRecord::Permission.create(name: "org2:claim_write")
+      resource_a = SuperAuth::ActiveRecord::Resource.create(name: "claim", external_id: @record_a.id, external_type: "Resource")
+      resource_b = SuperAuth::ActiveRecord::Resource.create(name: "claim", external_id: @record_b.id, external_type: "Resource")
+
+      SuperAuth::ActiveRecord::Edge.create!(user: @alice, group: org1_reps)
+      SuperAuth::ActiveRecord::Edge.create!(user: @bob, group: org2_reps)
+      SuperAuth::ActiveRecord::Edge.create!(group: org1_reps, role: role1)
+      SuperAuth::ActiveRecord::Edge.create!(group: org2_reps, role: role2)
+      SuperAuth::ActiveRecord::Edge.create!(role: role1, permission: write1)
+      SuperAuth::ActiveRecord::Edge.create!(role: role2, permission: write2)
+      SuperAuth::ActiveRecord::Edge.create!(permission: write1, resource: resource_a)
+      SuperAuth::ActiveRecord::Edge.create!(permission: write2, resource: resource_b)
+      SuperAuth::ActiveRecord::Authorization.compile!
+    end
+
+    it "compiles exactly one authorization per rep" do
+      expect(SuperAuth::ActiveRecord::Authorization.pluck(:user_id, :resource_external_id).sort).to eq [
+        [@alice.id, @record_a.id],
+        [@bob.id, @record_b.id],
+      ]
+    end
+
+    it "lets each rep load only their own org's record" do
+      SuperAuth.current_user = @alice
+      expect(resource_class.all.map(&:id)).to eq [@record_a.id]
+      expect(resource_class.where(id: @record_b.id)).to be_empty
+
+      SuperAuth.current_user = @bob
+      expect(resource_class.all.map(&:id)).to eq [@record_b.id]
+      expect(resource_class.where(id: @record_a.id)).to be_empty
+    end
+  end
 end

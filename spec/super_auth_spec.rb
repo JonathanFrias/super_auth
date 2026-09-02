@@ -464,6 +464,410 @@ RSpec.describe SuperAuth do
       expect(edges.first[:user_name]).to eq 'Insider'
     end
 
+    describe "cross-group role isolation (regression: strategy 1 once joined every role to every group holding a role)" do
+      # Every row as [user, group, role, permission, resource] names, deduplicated and sorted.
+      def grants(ds = SuperAuth::Edge.users_groups_roles_permissions_resources)
+        ds.all.map { |e| [e[:user_name], e[:group_name], e[:role_name], e[:permission_name], e[:resource_name]] }.uniq.sort
+      end
+
+      # Alpha holds AlphaRole (a -> a-res), Beta holds BetaRole (b -> b-res).
+      # Insider is in Alpha, Outsider is in Beta.
+      def two_groups_two_roles
+        insider = SuperAuth::User.create(name: 'Insider')
+        outsider = SuperAuth::User.create(name: 'Outsider')
+        alpha = SuperAuth::Group.create(name: 'Alpha')
+        beta = SuperAuth::Group.create(name: 'Beta')
+        alpha_role = SuperAuth::Role.create(name: 'AlphaRole')
+        beta_role = SuperAuth::Role.create(name: 'BetaRole')
+        perm_a = SuperAuth::Permission.create(name: 'a')
+        perm_b = SuperAuth::Permission.create(name: 'b')
+        res_a = SuperAuth::Resource.create(name: 'a-res')
+        res_b = SuperAuth::Resource.create(name: 'b-res')
+
+        SuperAuth::Edge.create(user: insider, group: alpha)
+        SuperAuth::Edge.create(user: outsider, group: beta)
+        SuperAuth::Edge.create(group: alpha, role: alpha_role)
+        SuperAuth::Edge.create(group: beta, role: beta_role)
+        SuperAuth::Edge.create(role: alpha_role, permission: perm_a)
+        SuperAuth::Edge.create(role: beta_role, permission: perm_b)
+        SuperAuth::Edge.create(permission: perm_a, resource: res_a)
+        SuperAuth::Edge.create(permission: perm_b, resource: res_b)
+
+        { insider: insider, outsider: outsider, alpha: alpha, beta: beta, alpha_role: alpha_role, beta_role: beta_role }
+      end
+
+      it "two groups each holding their own role do not cross-grant" do
+        two_groups_two_roles
+
+        edges = SuperAuth::Edge.users_groups_roles_permissions_resources.all
+        expect(edges.map { |e| [e[:user_name], e[:role_name]] }.sort).to eq [['Insider', 'AlphaRole'], ['Outsider', 'BetaRole']]
+        expect(grants).to eq [
+          ['Insider', 'Alpha', 'AlphaRole', 'a', 'a-res'],
+          ['Outsider', 'Beta', 'BetaRole', 'b', 'b-res'],
+        ]
+      end
+
+      it "the org isolation scenario: reps of one org never see the other org's claims through the union" do
+        org1 = SuperAuth::Group.create(name: 'Org1')
+        org1_reps = SuperAuth::Group.create(name: 'Org1/Reps', parent: org1)
+        org2 = SuperAuth::Group.create(name: 'Org2')
+        org2_reps = SuperAuth::Group.create(name: 'Org2/Reps', parent: org2)
+        alice = SuperAuth::User.create(name: 'alice', external_id: 'alice', external_type: 'User')
+        carol = SuperAuth::User.create(name: 'carol', external_id: 'carol', external_type: 'User')
+        bob = SuperAuth::User.create(name: 'bob', external_id: 'bob', external_type: 'User')
+        SuperAuth::Edge.create(user: alice, group: org1_reps)
+        SuperAuth::Edge.create(user: carol, group: org1)
+        SuperAuth::Edge.create(user: bob, group: org2_reps)
+
+        claim_a = SuperAuth::Resource.create(name: 'Claim', external_id: 'claimA', external_type: 'Claim')
+        claim_b = SuperAuth::Resource.create(name: 'Claim', external_id: 'claimB', external_type: 'Claim')
+        org1_rep_role = SuperAuth::Role.create(name: 'Org1 Rep Role')
+        org2_rep_role = SuperAuth::Role.create(name: 'Org2 Rep Role')
+        org1_write = SuperAuth::Permission.create(name: 'org1:claim_write')
+        org2_write = SuperAuth::Permission.create(name: 'org2:claim_write')
+        org1_read = SuperAuth::Permission.create(name: 'org1:claim_read')
+
+        SuperAuth::Edge.create(group: org1_reps, role: org1_rep_role)
+        SuperAuth::Edge.create(role: org1_rep_role, permission: org1_write)
+        SuperAuth::Edge.create(permission: org1_write, resource: claim_a)
+        SuperAuth::Edge.create(group: org2_reps, role: org2_rep_role)
+        SuperAuth::Edge.create(role: org2_rep_role, permission: org2_write)
+        SuperAuth::Edge.create(permission: org2_write, resource: claim_b)
+        # Strategy 3 (group -> permission) grant at the org root, must survive untouched.
+        SuperAuth::Edge.create(group: org1, permission: org1_read)
+        SuperAuth::Edge.create(permission: org1_read, resource: claim_a)
+
+        auths = SuperAuth::Edge.authorizations.all
+        rows = auths.map { |a| [a[:user_name], a[:group_name], a[:role_name].to_s, a[:permission_name], a[:resource_external_id]] }.uniq.sort
+        expect(rows).to eq [
+          ['alice', 'Org1/Reps', '', 'org1:claim_read', 'claimA'],
+          ['alice', 'Org1/Reps', 'Org1 Rep Role', 'org1:claim_write', 'claimA'],
+          ['bob', 'Org2/Reps', 'Org2 Rep Role', 'org2:claim_write', 'claimB'],
+          ['carol', 'Org1', '', 'org1:claim_read', 'claimA'],
+        ]
+
+        by_user = auths.group_by { |a| a[:user_name] }.transform_values { |rs| rs.map { |a| a[:resource_external_id] }.uniq }
+        expect(by_user['bob']).to eq ['claimB']
+        expect(by_user['alice']).to eq ['claimA']
+        expect(by_user['carol']).to eq ['claimA']
+      end
+
+      it "a role attached to one child of a shared parent does not reach the sibling branch" do
+        hq = SuperAuth::Group.create(name: 'HQ')
+        sales = SuperAuth::Group.create(name: 'Sales', parent: hq)
+        support = SuperAuth::Group.create(name: 'Support', parent: hq)
+        seller = SuperAuth::User.create(name: 'Seller')
+        helper = SuperAuth::User.create(name: 'Helper')
+        role = SuperAuth::Role.create(name: 'Closer')
+        permission = SuperAuth::Permission.create(name: 'close')
+        resource = SuperAuth::Resource.create(name: 'deals')
+
+        SuperAuth::Edge.create(user: seller, group: sales)
+        SuperAuth::Edge.create(user: helper, group: support)
+        SuperAuth::Edge.create(group: sales, role: role)
+        SuperAuth::Edge.create(role: role, permission: permission)
+        SuperAuth::Edge.create(permission: permission, resource: resource)
+
+        expect(grants).to eq [['Seller', 'Sales', 'Closer', 'close', 'deals']]
+      end
+
+      it "a role on the shared parent reaches every branch while a role on one branch stays there" do
+        hq = SuperAuth::Group.create(name: 'HQ')
+        sales = SuperAuth::Group.create(name: 'Sales', parent: hq)
+        support = SuperAuth::Group.create(name: 'Support', parent: hq)
+        seller = SuperAuth::User.create(name: 'Seller')
+        helper = SuperAuth::User.create(name: 'Helper')
+        staff = SuperAuth::Role.create(name: 'Staff')
+        closer = SuperAuth::Role.create(name: 'Closer')
+        badge = SuperAuth::Permission.create(name: 'badge')
+        close = SuperAuth::Permission.create(name: 'close')
+        building = SuperAuth::Resource.create(name: 'building')
+        deals = SuperAuth::Resource.create(name: 'deals')
+
+        SuperAuth::Edge.create(user: seller, group: sales)
+        SuperAuth::Edge.create(user: helper, group: support)
+        SuperAuth::Edge.create(group: hq, role: staff)
+        SuperAuth::Edge.create(group: sales, role: closer)
+        SuperAuth::Edge.create(role: staff, permission: badge)
+        SuperAuth::Edge.create(role: closer, permission: close)
+        SuperAuth::Edge.create(permission: badge, resource: building)
+        SuperAuth::Edge.create(permission: close, resource: deals)
+
+        expect(grants).to eq [
+          ['Helper', 'Support', 'Staff', 'badge', 'building'],
+          ['Seller', 'Sales', 'Closer', 'close', 'deals'],
+          ['Seller', 'Sales', 'Staff', 'badge', 'building'],
+        ]
+      end
+
+      it "a role held by a child group does not flow up to members of the parent group" do
+        company = SuperAuth::Group.create(name: 'Company')
+        engineering = SuperAuth::Group.create(name: 'Engineering', parent: company)
+        exec = SuperAuth::User.create(name: 'Exec')
+        dev = SuperAuth::User.create(name: 'Dev')
+        role = SuperAuth::Role.create(name: 'Deployer')
+        permission = SuperAuth::Permission.create(name: 'deploy')
+        resource = SuperAuth::Resource.create(name: 'prod')
+
+        SuperAuth::Edge.create(user: exec, group: company)
+        SuperAuth::Edge.create(user: dev, group: engineering)
+        SuperAuth::Edge.create(group: engineering, role: role)
+        SuperAuth::Edge.create(role: role, permission: permission)
+        SuperAuth::Edge.create(permission: permission, resource: resource)
+
+        expect(grants).to eq [['Dev', 'Engineering', 'Deployer', 'deploy', 'prod']]
+      end
+
+      it "a role held by two groups reaches both memberships and no other group" do
+        a = SuperAuth::User.create(name: 'A')
+        b = SuperAuth::User.create(name: 'B')
+        c = SuperAuth::User.create(name: 'C')
+        alpha = SuperAuth::Group.create(name: 'Alpha')
+        beta = SuperAuth::Group.create(name: 'Beta')
+        gamma = SuperAuth::Group.create(name: 'Gamma')
+        shared = SuperAuth::Role.create(name: 'Shared')
+        use = SuperAuth::Permission.create(name: 'use')
+        tool = SuperAuth::Resource.create(name: 'tool')
+
+        SuperAuth::Edge.create(user: a, group: alpha)
+        SuperAuth::Edge.create(user: b, group: beta)
+        SuperAuth::Edge.create(user: c, group: gamma)
+        SuperAuth::Edge.create(group: alpha, role: shared)
+        SuperAuth::Edge.create(group: beta, role: shared)
+        SuperAuth::Edge.create(role: shared, permission: use)
+        SuperAuth::Edge.create(permission: use, resource: tool)
+
+        expect(grants).to eq [
+          ['A', 'Alpha', 'Shared', 'use', 'tool'],
+          ['B', 'Beta', 'Shared', 'use', 'tool'],
+        ]
+      end
+
+      it "the same permission granted through different roles is attributed to each holder's own role" do
+        a = SuperAuth::User.create(name: 'A')
+        b = SuperAuth::User.create(name: 'B')
+        alpha = SuperAuth::Group.create(name: 'Alpha')
+        beta = SuperAuth::Group.create(name: 'Beta')
+        editor = SuperAuth::Role.create(name: 'Editor')
+        author = SuperAuth::Role.create(name: 'Author')
+        write = SuperAuth::Permission.create(name: 'write')
+        docs = SuperAuth::Resource.create(name: 'docs')
+
+        SuperAuth::Edge.create(user: a, group: alpha)
+        SuperAuth::Edge.create(user: b, group: beta)
+        SuperAuth::Edge.create(group: alpha, role: editor)
+        SuperAuth::Edge.create(group: beta, role: author)
+        SuperAuth::Edge.create(role: editor, permission: write)
+        SuperAuth::Edge.create(role: author, permission: write)
+        SuperAuth::Edge.create(permission: write, resource: docs)
+
+        expect(grants).to eq [
+          ['A', 'Alpha', 'Editor', 'write', 'docs'],
+          ['B', 'Beta', 'Author', 'write', 'docs'],
+        ]
+      end
+
+      it "a granted role subtree expands only for the group that holds its root" do
+        a = SuperAuth::User.create(name: 'A')
+        b = SuperAuth::User.create(name: 'B')
+        alpha = SuperAuth::Group.create(name: 'Alpha')
+        beta = SuperAuth::Group.create(name: 'Beta')
+        staff = SuperAuth::Role.create(name: 'Staff')
+        analyst = SuperAuth::Role.create(name: 'Analyst', parent: staff)
+        auditor = SuperAuth::Role.create(name: 'Auditor', parent: staff)
+        badge = SuperAuth::Permission.create(name: 'badge')
+        analyze = SuperAuth::Permission.create(name: 'analyze')
+        audit = SuperAuth::Permission.create(name: 'audit')
+        building = SuperAuth::Resource.create(name: 'building')
+        reports = SuperAuth::Resource.create(name: 'reports')
+        ledger = SuperAuth::Resource.create(name: 'ledger')
+
+        SuperAuth::Edge.create(user: a, group: alpha)
+        SuperAuth::Edge.create(user: b, group: beta)
+        SuperAuth::Edge.create(group: alpha, role: staff)
+        SuperAuth::Edge.create(group: beta, role: auditor)
+        SuperAuth::Edge.create(role: staff, permission: badge)
+        SuperAuth::Edge.create(role: analyst, permission: analyze)
+        SuperAuth::Edge.create(role: auditor, permission: audit)
+        SuperAuth::Edge.create(permission: badge, resource: building)
+        SuperAuth::Edge.create(permission: analyze, resource: reports)
+        SuperAuth::Edge.create(permission: audit, resource: ledger)
+
+        expect(grants).to eq [
+          ['A', 'Alpha', 'Analyst', 'analyze', 'reports'],
+          ['A', 'Alpha', 'Auditor', 'audit', 'ledger'],
+          ['A', 'Alpha', 'Staff', 'badge', 'building'],
+          ['B', 'Beta', 'Auditor', 'audit', 'ledger'],
+        ]
+      end
+
+      it "a user in two groups receives both groups' roles while single-group users receive one" do
+        ctx = two_groups_two_roles
+        both = SuperAuth::User.create(name: 'Both')
+        SuperAuth::Edge.create(user: both, group: ctx[:alpha])
+        SuperAuth::Edge.create(user: both, group: ctx[:beta])
+
+        expect(grants).to eq [
+          ['Both', 'Alpha', 'AlphaRole', 'a', 'a-res'],
+          ['Both', 'Beta', 'BetaRole', 'b', 'b-res'],
+          ['Insider', 'Alpha', 'AlphaRole', 'a', 'a-res'],
+          ['Outsider', 'Beta', 'BetaRole', 'b', 'b-res'],
+        ]
+      end
+
+      it "a role held by a group with no members grants nothing to anyone" do
+        ctx = two_groups_two_roles
+        ghost = SuperAuth::Group.create(name: 'Ghost')
+        ghost_role = SuperAuth::Role.create(name: 'GhostRole')
+        haunt = SuperAuth::Permission.create(name: 'haunt')
+        house = SuperAuth::Resource.create(name: 'house')
+        SuperAuth::Edge.create(group: ghost, role: ghost_role)
+        SuperAuth::Edge.create(role: ghost_role, permission: haunt)
+        SuperAuth::Edge.create(permission: haunt, resource: house)
+
+        expect(grants).to eq [
+          ['Insider', 'Alpha', 'AlphaRole', 'a', 'a-res'],
+          ['Outsider', 'Beta', 'BetaRole', 'b', 'b-res'],
+        ]
+        expect(grants.map(&:last)).not_to include 'house'
+        expect(ctx[:insider]).not_to be_nil
+      end
+
+      it "a group with members but no role edge grants nothing even when other groups hold roles" do
+        two_groups_two_roles
+        bystander = SuperAuth::User.create(name: 'Bystander')
+        gamma = SuperAuth::Group.create(name: 'Gamma')
+        SuperAuth::Edge.create(user: bystander, group: gamma)
+
+        expect(grants.map(&:first)).not_to include 'Bystander'
+        expect(grants.length).to eq 2
+      end
+
+      it "removing one group's role edge revokes only that group" do
+        ctx = two_groups_two_roles
+        SuperAuth::Edge.where(group_id: ctx[:alpha].id, role_id: ctx[:alpha_role].id).delete
+
+        expect(grants).to eq [['Outsider', 'Beta', 'BetaRole', 'b', 'b-res']]
+      end
+
+      it "mirrored org trees stay isolated at every depth" do
+        %w[Org1 Org2].each do |org_name|
+          org = SuperAuth::Group.create(name: org_name)
+          dept = SuperAuth::Group.create(name: "#{org_name}/Dept", parent: org)
+          team = SuperAuth::Group.create(name: "#{org_name}/Team", parent: dept)
+          member = SuperAuth::User.create(name: "#{org_name} member")
+          role = SuperAuth::Role.create(name: "#{org_name} role")
+          permission = SuperAuth::Permission.create(name: "#{org_name}:perm")
+          resource = SuperAuth::Resource.create(name: "#{org_name} data")
+
+          SuperAuth::Edge.create(user: member, group: team)
+          SuperAuth::Edge.create(group: dept, role: role)
+          SuperAuth::Edge.create(role: role, permission: permission)
+          SuperAuth::Edge.create(permission: permission, resource: resource)
+        end
+
+        expect(grants).to eq [
+          ['Org1 member', 'Org1/Team', 'Org1 role', 'Org1:perm', 'Org1 data'],
+          ['Org2 member', 'Org2/Team', 'Org2 role', 'Org2:perm', 'Org2 data'],
+        ]
+      end
+
+      it "with many tenants every user is granted exactly their own tenant's role" do
+        tenants = (1..8).map { |i| "T#{i}" }
+        tenants.each do |t|
+          group = SuperAuth::Group.create(name: t)
+          user = SuperAuth::User.create(name: "#{t} user")
+          role = SuperAuth::Role.create(name: "#{t} role")
+          permission = SuperAuth::Permission.create(name: "#{t} perm")
+          resource = SuperAuth::Resource.create(name: "#{t} res")
+
+          SuperAuth::Edge.create(user: user, group: group)
+          SuperAuth::Edge.create(group: group, role: role)
+          SuperAuth::Edge.create(role: role, permission: permission)
+          SuperAuth::Edge.create(permission: permission, resource: resource)
+        end
+
+        expected = tenants.map { |t| ["#{t} user", t, "#{t} role", "#{t} perm", "#{t} res"] }.sort
+        expect(grants).to eq expected
+        expect(grants.length).to eq tenants.length
+      end
+
+      it "matches an in-Ruby oracle over a multi-tenant graph, for strategy 1 and for the union" do
+        group_parent = { 'Corp' => nil, 'Eng' => 'Corp', 'Web' => 'Eng', 'Data' => 'Eng', 'Ops' => 'Corp', 'Vendor' => nil, 'VendorReps' => 'Vendor' }
+        role_parent = { 'Employee' => nil, 'Engineer' => 'Employee', 'Frontend' => 'Engineer', 'SRE' => 'Employee', 'VendorRole' => nil, 'Auditor' => nil }
+        memberships = { 'ceo' => ['Corp'], 'web1' => ['Web'], 'data1' => ['Data'], 'ops1' => ['Ops'], 'vendor1' => ['VendorReps'], 'multi' => ['Web', 'Ops'], 'lonely' => [] }
+        group_roles = { 'Corp' => ['Employee'], 'Eng' => ['Engineer'], 'Web' => ['Frontend'], 'Ops' => ['SRE'], 'Vendor' => ['VendorRole'], 'Data' => ['Auditor'] }
+        role_perms = { 'Employee' => ['badge'], 'Engineer' => ['code'], 'Frontend' => ['ui'], 'SRE' => ['pager'], 'VendorRole' => ['portal'], 'Auditor' => ['books'] }
+        perm_resources = { 'badge' => ['building'], 'code' => ['repo', 'ci'], 'ui' => ['css'], 'pager' => ['oncall'], 'portal' => ['vendor_portal'], 'books' => ['ledger'] }
+
+        groups = {}
+        group_parent.each { |name, parent| groups[name] = SuperAuth::Group.create(name: name, parent: groups[parent]) }
+        roles = {}
+        role_parent.each { |name, parent| roles[name] = SuperAuth::Role.create(name: name, parent: roles[parent]) }
+        users = memberships.keys.to_h { |n| [n, SuperAuth::User.create(name: n)] }
+        perms = role_perms.values.flatten.uniq.to_h { |n| [n, SuperAuth::Permission.create(name: n)] }
+        resources = perm_resources.values.flatten.uniq.to_h { |n| [n, SuperAuth::Resource.create(name: n)] }
+
+        memberships.each { |u, gs| gs.each { |g| SuperAuth::Edge.create(user: users[u], group: groups[g]) } }
+        group_roles.each { |g, rs| rs.each { |r| SuperAuth::Edge.create(group: groups[g], role: roles[r]) } }
+        role_perms.each { |r, ps| ps.each { |p| SuperAuth::Edge.create(role: roles[r], permission: perms[p]) } }
+        perm_resources.each { |p, rs| rs.each { |r| SuperAuth::Edge.create(permission: perms[p], resource: resources[r]) } }
+
+        ancestors = ->(g) { g.nil? ? [] : [g] + ancestors.(group_parent[g]) }
+        subtree = ->(r) { [r] + role_parent.select { |_, p| p == r }.keys.flat_map { |c| subtree.(c) } }
+        expected = memberships.flat_map { |u, gs|
+          gs.flat_map { |g|
+            held = ancestors.(g).flat_map { |a| group_roles.fetch(a, []) }.flat_map { |r| subtree.(r) }.uniq
+            held.flat_map { |r|
+              role_perms.fetch(r, []).flat_map { |p| perm_resources.fetch(p, []).map { |res| [u, g, r, p, res] } }
+            }
+          }
+        }.uniq.sort
+
+        expect(expected.length).to eq 32
+        expect(grants).to eq expected
+        # No other strategy has any edges in this graph, so the union must be identical.
+        expect(grants(SuperAuth::Edge.authorizations)).to eq expected
+      end
+
+      it "union rows keep group_path and role_path from the holder's own ancestry" do
+        company = SuperAuth::Group.create(name: 'Company')
+        engineering = SuperAuth::Group.create(name: 'Engineering', parent: company)
+        other = SuperAuth::Group.create(name: 'Other')
+        dev = SuperAuth::User.create(name: 'Dev')
+        stranger = SuperAuth::User.create(name: 'Stranger')
+        staff = SuperAuth::Role.create(name: 'Staff')
+        coder = SuperAuth::Role.create(name: 'Coder', parent: staff)
+        decoy = SuperAuth::Role.create(name: 'Decoy')
+        permission = SuperAuth::Permission.create(name: 'commit')
+        resource = SuperAuth::Resource.create(name: 'repo')
+
+        SuperAuth::Edge.create(user: dev, group: engineering)
+        SuperAuth::Edge.create(user: stranger, group: other)
+        SuperAuth::Edge.create(group: company, role: staff)
+        SuperAuth::Edge.create(group: other, role: decoy)
+        SuperAuth::Edge.create(role: coder, permission: permission)
+        SuperAuth::Edge.create(permission: permission, resource: resource)
+
+        auths = SuperAuth::Edge.authorizations.all
+        expect(auths.length).to eq 1
+        auth = auths.first
+        expect(auth[:user_name]).to eq 'Dev'
+        expect(auth[:group_id].to_s).to eq engineering.id.to_s
+        expect(auth[:group_name]).to eq 'Engineering'
+        expect(auth[:group_parent_id].to_s).to eq company.id.to_s
+        expect(auth[:group_path]).to eq "#{company.id},#{engineering.id}"
+        expect(auth[:group_name_path]).to eq 'Company,Engineering'
+        expect(auth[:role_id].to_s).to eq coder.id.to_s
+        expect(auth[:role_name]).to eq 'Coder'
+        expect(auth[:role_parent_id].to_s).to eq staff.id.to_s
+        expect(auth[:role_path]).to eq "#{staff.id},#{coder.id}"
+        expect(auth[:role_name_path]).to eq 'Staff,Coder'
+        expect(auth[:permission_name]).to eq 'commit'
+        expect(auth[:resource_name]).to eq 'repo'
+      end
+    end
+
     it "multiple permissions on the same role->resource path produce multiple authorization records" do
       user = SuperAuth::User.create(name: 'Grace')
       group = SuperAuth::Group.create(name: 'Admin')
@@ -2226,6 +2630,58 @@ RSpec.describe SuperAuth do
       edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
       expect(edges.length).to eq 1
       expect(edges.first[:user_name]).to eq 'Insider'
+    end
+
+    it "two groups each holding their own role do not cross-grant (AR wrapper)" do
+      insider = SuperAuth::ActiveRecord::User.create(name: 'Insider')
+      outsider = SuperAuth::ActiveRecord::User.create(name: 'Outsider')
+      alpha = SuperAuth::ActiveRecord::Group.create(name: 'Alpha')
+      beta = SuperAuth::ActiveRecord::Group.create(name: 'Beta')
+      alpha_role = SuperAuth::ActiveRecord::Role.create(name: 'AlphaRole')
+      beta_role = SuperAuth::ActiveRecord::Role.create(name: 'BetaRole')
+      perm_a = SuperAuth::ActiveRecord::Permission.create(name: 'a')
+      perm_b = SuperAuth::ActiveRecord::Permission.create(name: 'b')
+      res_a = SuperAuth::ActiveRecord::Resource.create(name: 'a-res')
+      res_b = SuperAuth::ActiveRecord::Resource.create(name: 'b-res')
+
+      SuperAuth::Edge.create(user_id: insider.id, group_id: alpha.id)
+      SuperAuth::Edge.create(user_id: outsider.id, group_id: beta.id)
+      SuperAuth::Edge.create(group_id: alpha.id, role_id: alpha_role.id)
+      SuperAuth::Edge.create(group_id: beta.id, role_id: beta_role.id)
+      SuperAuth::Edge.create(role_id: alpha_role.id, permission_id: perm_a.id)
+      SuperAuth::Edge.create(role_id: beta_role.id, permission_id: perm_b.id)
+      SuperAuth::Edge.create(permission_id: perm_a.id, resource_id: res_a.id)
+      SuperAuth::Edge.create(permission_id: perm_b.id, resource_id: res_b.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      rows = edges.map { |e| [e[:user_name], e[:group_name], e[:role_name], e[:permission_name], e[:resource_name]] }.sort
+      expect(rows).to eq [
+        ['Insider', 'Alpha', 'AlphaRole', 'a', 'a-res'],
+        ['Outsider', 'Beta', 'BetaRole', 'b', 'b-res'],
+      ]
+
+      auths = SuperAuth::ActiveRecord::Edge.authorizations.to_a
+      expect(auths.map { |a| [a[:user_name], a[:resource_name]] }.sort).to eq [['Insider', 'a-res'], ['Outsider', 'b-res']]
+    end
+
+    it "a role attached to one child of a shared parent does not reach the sibling branch (AR wrapper)" do
+      hq = SuperAuth::ActiveRecord::Group.create(name: 'HQ')
+      sales = SuperAuth::ActiveRecord::Group.create(name: 'Sales', parent: hq)
+      support = SuperAuth::ActiveRecord::Group.create(name: 'Support', parent: hq)
+      seller = SuperAuth::ActiveRecord::User.create(name: 'Seller')
+      helper = SuperAuth::ActiveRecord::User.create(name: 'Helper')
+      role = SuperAuth::ActiveRecord::Role.create(name: 'Closer')
+      permission = SuperAuth::ActiveRecord::Permission.create(name: 'close')
+      resource = SuperAuth::ActiveRecord::Resource.create(name: 'deals')
+
+      SuperAuth::Edge.create(user_id: seller.id, group_id: sales.id)
+      SuperAuth::Edge.create(user_id: helper.id, group_id: support.id)
+      SuperAuth::Edge.create(group_id: sales.id, role_id: role.id)
+      SuperAuth::Edge.create(role_id: role.id, permission_id: permission.id)
+      SuperAuth::Edge.create(permission_id: permission.id, resource_id: resource.id)
+
+      edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+      expect(edges.map { |e| [e[:user_name], e[:group_name], e[:role_name]] }).to eq [['Seller', 'Sales', 'Closer']]
     end
 
     it "multiple permissions on the same role->resource path produce multiple authorization records" do

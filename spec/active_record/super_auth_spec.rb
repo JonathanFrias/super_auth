@@ -134,6 +134,69 @@ RSpec.describe SuperAuth do
     expect(edges.map { |e| e[:resource_name] }).to eq ['resource', 'resource', 'resource', 'resource']
   end
 
+  # Alpha holds AlphaRole (a -> a-res), Beta holds BetaRole (b -> b-res).
+  # Insider is in Alpha, Outsider is in Beta.
+  let(:two_groups_two_roles) do
+    @insider = SuperAuth::ActiveRecord::User.create(name: 'Insider')
+    @outsider = SuperAuth::ActiveRecord::User.create(name: 'Outsider')
+    @alpha = SuperAuth::ActiveRecord::Group.create(name: 'Alpha')
+    @beta = SuperAuth::ActiveRecord::Group.create(name: 'Beta')
+    @alpha_role = SuperAuth::ActiveRecord::Role.create(name: 'AlphaRole')
+    @beta_role = SuperAuth::ActiveRecord::Role.create(name: 'BetaRole')
+    @perm_a = SuperAuth::ActiveRecord::Permission.create(name: 'a')
+    @perm_b = SuperAuth::ActiveRecord::Permission.create(name: 'b')
+    @res_a = SuperAuth::ActiveRecord::Resource.create(name: 'a-res')
+    @res_b = SuperAuth::ActiveRecord::Resource.create(name: 'b-res')
+
+    SuperAuth::ActiveRecord::Edge.create(user: @insider, group: @alpha)
+    SuperAuth::ActiveRecord::Edge.create(user: @outsider, group: @beta)
+    SuperAuth::ActiveRecord::Edge.create(group: @alpha, role: @alpha_role)
+    SuperAuth::ActiveRecord::Edge.create(group: @beta, role: @beta_role)
+    SuperAuth::ActiveRecord::Edge.create(role: @alpha_role, permission: @perm_a)
+    SuperAuth::ActiveRecord::Edge.create(role: @beta_role, permission: @perm_b)
+    SuperAuth::ActiveRecord::Edge.create(permission: @perm_a, resource: @res_a)
+    SuperAuth::ActiveRecord::Edge.create(permission: @perm_b, resource: @res_b)
+  end
+
+  it "users<->groups<->roles<->permissions<->resources does not cross-grant between groups" do
+    two_groups_two_roles
+
+    edges = SuperAuth::ActiveRecord::Edge.users_groups_roles_permissions_resources.to_a
+    expect(edges.map { |e| [e[:user_name], e[:role_name]] }.sort).to eq [['Insider', 'AlphaRole'], ['Outsider', 'BetaRole']]
+    expect(edges.map { |e| [e[:user_name], e[:group_name], e[:permission_name], e[:resource_name]] }.sort).to eq [
+      ['Insider', 'Alpha', 'a', 'a-res'],
+      ['Outsider', 'Beta', 'b', 'b-res'],
+    ]
+  end
+
+  it "authorizations and from_graph carry no cross-group role grants" do
+    two_groups_two_roles
+
+    [SuperAuth::ActiveRecord::Edge.authorizations, SuperAuth::ActiveRecord::Authorization.from_graph].each do |relation|
+      rows = relation.to_a.map { |a| [a[:user_name], a[:role_name], a[:resource_name]] }.sort
+      expect(rows).to eq [['Insider', 'AlphaRole', 'a-res'], ['Outsider', 'BetaRole', 'b-res']]
+    end
+  end
+
+  it "compile! persists no cross-group role grants" do
+    two_groups_two_roles
+
+    expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq 2
+    rows = SuperAuth::ActiveRecord::Authorization.pluck(:user_id, :group_id, :role_id, :resource_id).sort
+    expect(rows).to eq [
+      [@insider.id, @alpha.id, @alpha_role.id, @res_a.id],
+      [@outsider.id, @beta.id, @beta_role.id, @res_b.id],
+    ]
+  end
+
+  it "compile! reflects a revoked group->role edge for that group only" do
+    two_groups_two_roles
+    SuperAuth::ActiveRecord::Edge.where(group: @alpha, role: @alpha_role).delete_all
+
+    expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq 1
+    expect(SuperAuth::ActiveRecord::Authorization.pluck(:user_id, :role_id)).to eq [[@outsider.id, @beta_role.id]]
+  end
+
   it "users<->groups<->permissions<->resources" do
     permissions_and_roles
     users_and_groups
