@@ -11,6 +11,7 @@
 ### Changed
 
 - Relicensed from MIT to GPL-2.0.
+- Path strategies 1, 2 and 3 join group ancestry and role subtrees on integer pairs from two new recursive CTEs (`Group.ancestor_pairs`, `Role.descendant_pairs`) instead of LIKE-matching ids inside the comma-separated path strings, which no planner can index. Output is unchanged. On a 10,000-user graph the full `authorizations` union went from 10.4 s to 2.5 s on Postgres 16; on MySQL 8 a 500-user graph went from 9.9 s to 0.08 s, and on SQLite strategy 1 alone went from over 400 s to 0.01 s.
 
 ### Fixed
 

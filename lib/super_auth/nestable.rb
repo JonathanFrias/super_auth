@@ -48,6 +48,31 @@ module SuperAuth::Nestable
       end
     end
 
+    # Every node paired with itself and each of its ancestors, as
+    # (descendant_id, ancestor_id). The path strategies join these integer
+    # pairs on equality; matching ids inside the comma-separated path strings
+    # with LIKE forced a nested loop no planner could index, and compile time
+    # grew roughly cubically with the graph.
+    def ancestor_pairs
+      table = pluralize
+      name = :"#{singularize}_ancestor_pairs"
+      anchor = db[table].select(Sequel[:id].as(:descendant_id), Sequel[:id].as(:ancestor_id))
+      step = db[name].join(table, id: :ancestor_id).exclude(Sequel[table][:parent_id] => nil).
+        select(Sequel[name][:descendant_id], Sequel[table][:parent_id])
+      db.from(name).with_recursive(name, anchor, step, args: [:descendant_id, :ancestor_id])
+    end
+
+    # Every node paired with itself and each of its descendants, as
+    # (ancestor_id, descendant_id). Granting a role grants its whole subtree.
+    def descendant_pairs
+      table = pluralize
+      name = :"#{singularize}_descendant_pairs"
+      anchor = db[table].select(Sequel[:id].as(:ancestor_id), Sequel[:id].as(:descendant_id))
+      step = db[name].join(table, parent_id: :descendant_id).
+        select(Sequel[name][:ancestor_id], Sequel[table][:id])
+      db.from(name).with_recursive(name, anchor, step, args: [:ancestor_id, :descendant_id])
+    end
+
     def cte(id = nil, direction = :desc)
       model = self
       cte_name = model.cte_name

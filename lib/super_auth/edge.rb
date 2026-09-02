@@ -41,25 +41,19 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
     def users_groups_roles_permissions_resources
       cast_type = string_cast_type
-      # Join users to their group via edges, then to the group CTE to get the user's group_path.
-      # A group -> role edge applies when its group is the user's group or any ancestor of it
-      # (any id in group_path). The granted role then expands to its whole subtree via role_path.
-      # Each step is correlated to the previous one, so a role held by one group never reaches
-      # members of an unrelated group.
+      # Join users to their group via edges. group_ancestors pairs that group with itself and
+      # every ancestor, so a group -> role edge on any of them applies. role_descendants then
+      # expands the granted role to its whole subtree. Each step is correlated to the previous
+      # one, so a role held by one group never reaches members of an unrelated group. The tree
+      # CTEs (user_groups, granted_roles) are joined by id only to supply the path columns.
       SuperAuth::User.db[:super_auth_users].
         join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
-        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:user_groups), Sequel[:user_groups][:id] => Sequel[:user_edges][:group_id]).
-        join(Sequel[:super_auth_edges].as(:group_role_edges),
-          Sequel.function(:concat, ',', Sequel[:user_groups][:group_path], ',').like(
-            Sequel.function(:concat, '%,', Sequel[:group_role_edges][:group_id].cast(cast_type), ',%')
-          )
-        ).
+        join(SuperAuth::Group.ancestor_pairs.as(:group_ancestors), descendant_id: Sequel[:user_edges][:group_id]).
+        join(Sequel[:super_auth_edges].as(:group_role_edges), group_id: Sequel[:group_ancestors][:ancestor_id]).
         where(Sequel.~(Sequel[:group_role_edges][:role_id] => nil)).
-        join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:granted_roles),
-          Sequel.function(:concat, ',', Sequel[:granted_roles][:role_path], ',').like(
-            Sequel.function(:concat, '%,', Sequel[:group_role_edges][:role_id].cast(cast_type), ',%')
-          )
-        ).
+        join(SuperAuth::Role.descendant_pairs.as(:role_descendants), ancestor_id: Sequel[:group_role_edges][:role_id]).
+        join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:user_groups), Sequel[:user_groups][:id] => Sequel[:user_edges][:group_id]).
+        join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:granted_roles), Sequel[:granted_roles][:id] => Sequel[:role_descendants][:descendant_id]).
         join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:granted_roles][:id]).
         join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
         join(Sequel[:super_auth_edges].as(:resource_edges), Sequel[:resource_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
@@ -103,17 +97,14 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
 
     def users_groups_permissions_resources
       cast_type = string_cast_type
-      # Join users to their group via edges, then to the group CTE to get the user's group_path.
-      # Use group_path to find all ancestor groups (any group whose id appears in the user's group_path).
-      # Then join permission edges on those ancestor groups.
+      # Join users to their group via edges. group_ancestors pairs that group with itself and
+      # every ancestor, so a group -> permission edge on any of them applies. user_groups (the
+      # tree) is joined by id only to supply the path columns.
       SuperAuth::User.db[:super_auth_users].
         join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
+        join(SuperAuth::Group.ancestor_pairs.as(:group_ancestors), descendant_id: Sequel[:user_edges][:group_id]).
+        join(Sequel[:super_auth_edges].as(:group_edges), group_id: Sequel[:group_ancestors][:ancestor_id]).
         join(SuperAuth::Group.from(SuperAuth::Group.trees).as(:user_groups), Sequel[:user_groups][:id] => Sequel[:user_edges][:group_id]).
-        join(Sequel[:super_auth_edges].as(:group_edges),
-          Sequel.function(:concat, ',', Sequel[:user_groups][:group_path], ',').like(
-            Sequel.function(:concat, '%,', Sequel[:group_edges][:group_id].cast(cast_type), ',%')
-          )
-        ).
         join(Sequel[:super_auth_permissions], id: Sequel[:group_edges][:permission_id]).
         join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
         join(Sequel[:super_auth_resources], id: Sequel[:permission_edges][:resource_id]).
@@ -157,26 +148,13 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
     def users_roles_permissions_resources
       cast_type = string_cast_type
 
-      # Step 1: Find which roles users are directly linked to via edges
-      user_role_ids_ds = SuperAuth::Edge.where(Sequel.~(user_id: nil) & Sequel.~(role_id: nil)).select(:role_id)
-
-      # Step 2: Expand those roles to all descendants via CTE
-      role_cte = SuperAuth::Role.cte(user_role_ids_ds).select {
-        [id.as(:role_id), name.as(:role_name), parent_id.as(:role_parent_id), role_path, role_name_path, created_at.as(:role_created_at), updated_at.as(:role_updated_at)]
-      }
-
-      # Step 3: Build the query from the expanded role tree
-      SuperAuth::Edge.from(role_cte.as(:users_roles_permissions_resources)).
-      # Join user_edges — match users who link to any role in the expanded CTE
-      # The user's edge links to an ancestor role, but the CTE path contains that ancestor
-      # We use the role_path to check: the role_path of the CTE row starts with the user's linked role
-      join(Sequel[:super_auth_edges].as(:user_edges),
-        Sequel.function(:concat, ',', Sequel[:users_roles_permissions_resources][:role_path], ',').like(
-          Sequel.function(:concat, '%,', Sequel[:user_edges][:role_id].cast(cast_type), ',%')
-        )
-      ).
-      where(Sequel.~(Sequel[:user_edges][:user_id] => nil) & Sequel.~(Sequel[:user_edges][:role_id] => nil)).
-      join(Sequel[:super_auth_users], id: Sequel[:user_edges][:user_id]).
+      # Join users to the roles they hold directly. role_descendants expands each held role to
+      # its whole subtree; granted_roles (the tree) is joined by id only to supply the path columns.
+      SuperAuth::User.db[:super_auth_users].
+      join(Sequel[:super_auth_edges].as(:user_edges), user_id: :id).
+      where(Sequel.~(Sequel[:user_edges][:role_id] => nil)).
+      join(SuperAuth::Role.descendant_pairs.as(:role_descendants), ancestor_id: Sequel[:user_edges][:role_id]).
+      join(SuperAuth::Role.from(SuperAuth::Role.trees).as(:granted_roles), Sequel[:granted_roles][:id] => Sequel[:role_descendants][:descendant_id]).
       select(
         Sequel[:super_auth_users][:id].as(:user_id),
         Sequel[:super_auth_users][:name].as(:user_name),
@@ -193,13 +171,13 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         Sequel.cast(nil, string_cast_type).as(:group_created_at),
         Sequel.cast(nil, string_cast_type).as(:group_updated_at),
 
-        Sequel[:users_roles_permissions_resources][:role_id],
-        Sequel[:users_roles_permissions_resources][:role_name].cast(cast_type).as(:role_name),
-        Sequel[:users_roles_permissions_resources][:role_path],
-        Sequel[:users_roles_permissions_resources][:role_name_path].cast(cast_type).as(:role_name_path),
-        Sequel[:users_roles_permissions_resources][:role_parent_id],
-        Sequel[:users_roles_permissions_resources][:role_created_at].cast(cast_type).as(:role_created_at),
-        Sequel[:users_roles_permissions_resources][:role_updated_at].cast(cast_type).as(:role_updated_at),
+        Sequel[:granted_roles][:id].as(:role_id),
+        Sequel[:granted_roles][:name].cast(cast_type).as(:role_name),
+        Sequel[:granted_roles][:role_path],
+        Sequel[:granted_roles][:role_name_path].cast(cast_type).as(:role_name_path),
+        Sequel[:granted_roles][:parent_id].as(:role_parent_id),
+        Sequel[:granted_roles][:created_at].cast(cast_type).as(:role_created_at),
+        Sequel[:granted_roles][:updated_at].cast(cast_type).as(:role_updated_at),
 
         Sequel[:super_auth_permissions][:id].as(:permission_id),
         Sequel[:super_auth_permissions][:name].cast(cast_type).as(:permission_name),
@@ -212,7 +190,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         Sequel[:super_auth_resources][:external_type].as(:resource_external_type),
       ).
       # Join permission and resource edges on the expanded role
-      join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:users_roles_permissions_resources][:role_id]).
+      join(Sequel[:super_auth_edges].as(:permission_edges), Sequel[:permission_edges][:role_id] => Sequel[:granted_roles][:id]).
       join(Sequel[:super_auth_permissions], id: Sequel[:permission_edges][:permission_id]).
       join(Sequel[:super_auth_edges].as(:resource_edges), Sequel[:resource_edges][:permission_id] => Sequel[:super_auth_permissions][:id]).
       join(Sequel[:super_auth_resources], id: Sequel[:resource_edges][:resource_id]).

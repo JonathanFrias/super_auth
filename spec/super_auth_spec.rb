@@ -146,6 +146,29 @@ RSpec.describe SuperAuth do
       ]
     end
 
+    it "ancestor_pairs and descendant_pairs enumerate the tree as integer pairs" do
+      root = SuperAuth::Group.create(name: 'root')
+      child = SuperAuth::Group.create(name: 'child', parent: root)
+      grandchild = SuperAuth::Group.create(name: 'grandchild', parent: child)
+      other = SuperAuth::Group.create(name: 'other')
+
+      ancestors = SuperAuth::Group.ancestor_pairs.map { |r| [r[:descendant_id], r[:ancestor_id]] }
+      expect(ancestors).to match_array [
+        [root.id, root.id],
+        [child.id, child.id], [child.id, root.id],
+        [grandchild.id, grandchild.id], [grandchild.id, child.id], [grandchild.id, root.id],
+        [other.id, other.id],
+      ]
+
+      descendants = SuperAuth::Group.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] }
+      expect(descendants).to match_array [
+        [root.id, root.id], [root.id, child.id], [root.id, grandchild.id],
+        [child.id, child.id], [child.id, grandchild.id],
+        [grandchild.id, grandchild.id],
+        [other.id, other.id],
+      ]
+    end
+
     # MySQL types a recursive CTE's columns from its anchor row, so without a
     # wide cast a 12-level id path (> 11 chars) or a long name path (> 255)
     # fails with "Data too long".
@@ -281,6 +304,29 @@ RSpec.describe SuperAuth do
         'Manager',
         'Manager,Team Lead',
         'Manager,Team Lead,IC'
+      ]
+    end
+
+    it "ancestor_pairs and descendant_pairs enumerate the tree as integer pairs" do
+      root = SuperAuth::Role.create(name: 'root')
+      child = SuperAuth::Role.create(name: 'child', parent: root)
+      grandchild = SuperAuth::Role.create(name: 'grandchild', parent: child)
+      other = SuperAuth::Role.create(name: 'other')
+
+      ancestors = SuperAuth::Role.ancestor_pairs.map { |r| [r[:descendant_id], r[:ancestor_id]] }
+      expect(ancestors).to match_array [
+        [root.id, root.id],
+        [child.id, child.id], [child.id, root.id],
+        [grandchild.id, grandchild.id], [grandchild.id, child.id], [grandchild.id, root.id],
+        [other.id, other.id],
+      ]
+
+      descendants = SuperAuth::Role.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] }
+      expect(descendants).to match_array [
+        [root.id, root.id], [root.id, child.id], [root.id, grandchild.id],
+        [child.id, child.id], [child.id, grandchild.id],
+        [grandchild.id, grandchild.id],
+        [other.id, other.id],
       ]
     end
 
