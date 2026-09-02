@@ -8,6 +8,11 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
   many_to_one :resource
 
   class << self
+    # The five strategies are UNIONed positionally. A column that is a real
+    # text column in one strategy and CAST(NULL AS ...) in another must be cast
+    # in every strategy: on MySQL the table collation and the connection
+    # collation can differ, and a column meeting a NULL cast at the same
+    # coercibility raises "Illegal mix of collations for operation 'UNION'".
     def string_cast_type
       case SuperAuth.db.database_type
       when :mysql, :mysql2
@@ -68,23 +73,23 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:updated_at].cast(cast_type).as(:user_updated_at),
 
           Sequel[:user_groups][:id].as(:group_id),
-          Sequel[:user_groups][:name].as(:group_name),
+          Sequel[:user_groups][:name].cast(cast_type).as(:group_name),
           Sequel[:user_groups][:group_path],
-          Sequel[:user_groups][:group_name_path],
+          Sequel[:user_groups][:group_name_path].cast(cast_type).as(:group_name_path),
           Sequel[:user_groups][:parent_id].as(:group_parent_id),
           Sequel[:user_groups][:created_at].cast(cast_type).as(:group_created_at),
           Sequel[:user_groups][:updated_at].cast(cast_type).as(:group_updated_at),
 
           Sequel[:granted_roles][:id].as(:role_id),
-          Sequel[:granted_roles][:name].as(:role_name),
+          Sequel[:granted_roles][:name].cast(cast_type).as(:role_name),
           Sequel[:granted_roles][:role_path],
-          Sequel[:granted_roles][:role_name_path],
+          Sequel[:granted_roles][:role_name_path].cast(cast_type).as(:role_name_path),
           Sequel[:granted_roles][:parent_id].as(:role_parent_id),
           Sequel[:granted_roles][:created_at].cast(cast_type).as(:role_created_at),
           Sequel[:granted_roles][:updated_at].cast(cast_type).as(:role_updated_at),
 
           Sequel[:super_auth_permissions][:id].as(:permission_id),
-          Sequel[:super_auth_permissions][:name].as(:permission_name),
+          Sequel[:super_auth_permissions][:name].cast(cast_type).as(:permission_name),
           Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
           Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
 
@@ -121,9 +126,9 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel[:super_auth_users][:updated_at].cast(cast_type).as(:user_updated_at),
 
           Sequel[:user_groups][:id].as(:group_id),
-          Sequel[:user_groups][:name].as(:group_name),
+          Sequel[:user_groups][:name].cast(cast_type).as(:group_name),
           Sequel[:user_groups][:group_path],
-          Sequel[:user_groups][:group_name_path],
+          Sequel[:user_groups][:group_name_path].cast(cast_type).as(:group_name_path),
           Sequel[:user_groups][:parent_id].as(:group_parent_id),
           Sequel[:user_groups][:created_at].cast(cast_type).as(:group_created_at),
           Sequel[:user_groups][:updated_at].cast(cast_type).as(:group_updated_at),
@@ -137,7 +142,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel.cast(nil, string_cast_type).as(:role_updated_at),
 
           Sequel[:super_auth_permissions][:id].as(:permission_id),
-          Sequel[:super_auth_permissions][:name].as(:permission_name),
+          Sequel[:super_auth_permissions][:name].cast(cast_type).as(:permission_name),
           Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
           Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
 
@@ -189,15 +194,15 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
         Sequel.cast(nil, string_cast_type).as(:group_updated_at),
 
         Sequel[:users_roles_permissions_resources][:role_id],
-        Sequel[:users_roles_permissions_resources][:role_name],
+        Sequel[:users_roles_permissions_resources][:role_name].cast(cast_type).as(:role_name),
         Sequel[:users_roles_permissions_resources][:role_path],
-        Sequel[:users_roles_permissions_resources][:role_name_path],
+        Sequel[:users_roles_permissions_resources][:role_name_path].cast(cast_type).as(:role_name_path),
         Sequel[:users_roles_permissions_resources][:role_parent_id],
         Sequel[:users_roles_permissions_resources][:role_created_at].cast(cast_type).as(:role_created_at),
         Sequel[:users_roles_permissions_resources][:role_updated_at].cast(cast_type).as(:role_updated_at),
 
         Sequel[:super_auth_permissions][:id].as(:permission_id),
-        Sequel[:super_auth_permissions][:name].as(:permission_name),
+        Sequel[:super_auth_permissions][:name].cast(cast_type).as(:permission_name),
         Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
         Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
 
@@ -243,7 +248,7 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
           Sequel.cast(nil, string_cast_type).as(:role_updated_at),
 
           Sequel[:super_auth_permissions][:id].as(:permission_id),
-          Sequel[:super_auth_permissions][:name].as(:permission_name),
+          Sequel[:super_auth_permissions][:name].cast(cast_type).as(:permission_name),
           Sequel[:super_auth_permissions][:created_at].cast(cast_type).as(:permission_created_at),
           Sequel[:super_auth_permissions][:updated_at].cast(cast_type).as(:permission_updated_at),
 

@@ -145,6 +145,20 @@ RSpec.describe SuperAuth do
         'Company,Dev,Backend'
       ]
     end
+
+    # MySQL types a recursive CTE's columns from its anchor row, so without a
+    # wide cast a 12-level id path (> 11 chars) or a long name path (> 255)
+    # fails with "Data too long".
+    it "keeps full paths through a 12-level tree with long names" do
+      names = (1..12).map { |i| "level#{i}-#{'x' * 60}" }
+      parent = nil
+      groups = names.map { |n| parent = SuperAuth::Group.create(name: n, parent: parent) }
+
+      leaf = SuperAuth::Group.trees.where(id: groups.last.id).first
+      expect(leaf[:group_path]).to eq groups.map(&:id).join(',')
+      expect(leaf[:group_name_path]).to eq names.join(',')
+      expect(groups.last.ancestors_dataset.map(:id)).to include(*groups[0..-2].map(&:id))
+    end
   end
 
   describe "US-002: Role Tree Hierarchies (Nestable)" do
@@ -269,9 +283,41 @@ RSpec.describe SuperAuth do
         'Manager,Team Lead,IC'
       ]
     end
+
+    it "keeps full paths through a 12-level tree with long names" do
+      names = (1..12).map { |i| "level#{i}-#{'x' * 60}" }
+      parent = nil
+      roles = names.map { |n| parent = SuperAuth::Role.create(name: n, parent: parent) }
+
+      leaf = SuperAuth::Role.trees.where(id: roles.last.id).first
+      expect(leaf[:role_path]).to eq roles.map(&:id).join(',')
+      expect(leaf[:role_name_path]).to eq names.join(',')
+      expect(roles.last.ancestors_dataset.map(:id)).to include(*roles[0..-2].map(&:id))
+    end
   end
 
   describe "US-003: Path Strategy 1 - users <-> groups <-> roles <-> permissions <-> resources" do
+    it "authorizes through a 12-level group tree and a 12-level role tree" do
+      gparent = nil
+      groups = (1..12).map { |i| gparent = SuperAuth::Group.create(name: "group#{i}-#{'g' * 40}", parent: gparent) }
+      rparent = nil
+      roles = (1..12).map { |i| rparent = SuperAuth::Role.create(name: "role#{i}-#{'r' * 40}", parent: rparent) }
+      user = SuperAuth::User.create(name: 'Leaf')
+      permission = SuperAuth::Permission.create(name: 'deep')
+      resource = SuperAuth::Resource.create(name: 'well')
+
+      SuperAuth::Edge.create(user: user, group: groups.last)
+      SuperAuth::Edge.create(group: groups.first, role: roles.first)
+      SuperAuth::Edge.create(role: roles.last, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: resource)
+
+      edges = SuperAuth::Edge.users_groups_roles_permissions_resources.all
+      expect(edges.length).to eq 1
+      expect(edges.first[:group_path]).to eq groups.map(&:id).join(',')
+      expect(edges.first[:role_path]).to eq roles.map(&:id).join(',')
+      expect(edges.first[:resource_name]).to eq 'well'
+    end
+
     it "basic flat case: user -> group -> role -> permission -> resource (no nesting)" do
       user = SuperAuth::User.create(name: 'Alice')
       group = SuperAuth::Group.create(name: 'Engineering')

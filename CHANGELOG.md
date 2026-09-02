@@ -12,6 +12,10 @@
 
 - Relicensed from MIT to GPL-2.0.
 
+### Fixed
+
+- MySQL 8 support. `SuperAuth::Edge.authorizations` raised "Illegal mix of collations for operation 'UNION'" whenever the connection collation differed from the table collation, which it does under ActiveRecord's defaults, so `compile!` could never run on MySQL. The recursive tree CTEs typed their path columns from the anchor row, so any `group_path` or `role_path` over 11 characters, or name path over 255, failed with "Data too long". Migration 8 no longer adds edge indexes on MySQL, where InnoDB already indexes foreign keys and refuses to drop them, which had broken `uninstall_migrations`. CI now runs the suite against real MySQL instead of silently falling back to SQLite.
+
 ## [0.3.3] - 2026-04-29
 
 - Fix: detect PostgreSQL/SQLite/Mysql2 adapter subclasses (e.g. PostGIS, Makara) when bootstrapping the Sequel connection from ActiveRecord. Previously only the exact stock adapter classes were recognized, leaving `SuperAuth.db` unset for apps using a subclassed adapter.

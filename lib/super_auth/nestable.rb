@@ -35,6 +35,19 @@ module SuperAuth::Nestable
       end
     end
 
+    # Cast type for the anchor row of the path CTEs. MySQL types a recursive
+    # CTE's columns from the anchor SELECT alone, so a bare CAST(id AS CHAR)
+    # makes the path column varchar(11) and every deeper level overflows it
+    # ("Data too long for column"). :text is unbounded elsewhere.
+    def path_cast_type
+      case SuperAuth.db.database_type
+      when :mysql, :mysql2
+        "char(4000)"
+      else
+        :text
+      end
+    end
+
     def cte(id = nil, direction = :desc)
       model = self
       cte_name = model.cte_name
@@ -69,8 +82,8 @@ module SuperAuth::Nestable
     def with_descending_paths(base_ds, recursive_ds, cte_name)
       [
         base_ds.select_append(
-          Sequel[table_name][:id].cast(string_cast_type).as(base_path)
-        ).select_append(Sequel[table_name][:name].as(base_name_path)),
+          Sequel[table_name][:id].cast(path_cast_type).as(base_path)
+        ).select_append(Sequel[table_name][:name].cast(path_cast_type).as(base_name_path)),
 
         recursive_ds.select_append(
           Sequel.function(:concat,
@@ -90,7 +103,7 @@ module SuperAuth::Nestable
 
     def with_ascending_paths(base_ds, recursive_ds, cte_name)
       [
-        base_ds.select_append(Sequel[table_name][:id].cast(string_cast_type).as(base_path)).select_append(Sequel[table_name][:name].as(base_name_path)),
+        base_ds.select_append(Sequel[table_name][:id].cast(path_cast_type).as(base_path)).select_append(Sequel[table_name][:name].cast(path_cast_type).as(base_name_path)),
         recursive_ds.select_append(
           Sequel.function(:concat,
             Sequel[table_name][:id].cast(string_cast_type),
