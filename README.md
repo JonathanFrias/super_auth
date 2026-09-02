@@ -14,6 +14,11 @@ SuperAuth enforces authorization in the database, so any language can participat
 
     gem "super_auth"
 
+## Supported databases
+
+PostgreSQL 13+, MySQL 8.0+, and SQLite 3.44+. The group and role trees are recursive
+CTEs and the path columns use `concat()`, which sets those floors. CI runs the full
+suite against each of the three. Row-level security is Postgres only.
 
 ## Docs
 
