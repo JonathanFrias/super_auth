@@ -2,6 +2,10 @@
 
 ## [0.7.0] - 2026-09-07
 
+### Fixed
+
+- The editor's Groups and Roles boxes drew a flat list ordered by name and faked the hierarchy with indentation, so a child appeared nested under whichever unrelated node happened to sort directly above it — a group named `org:451ed5a8…` sorts between "Lawyers" and "Organizations" and was drawn under Lawyers, while its real parent rendered below its own child. Group grants flow to members of descendant groups, so "which parent does this hang under" is the question the editor is opened to answer, and it was answering it wrong. `/api/graph` now returns nested types ordered by ancestor name path, so each child follows its own parent with siblings alphabetical among themselves. Display only: no `parent_id` changes, and the client's `depthOf` is untouched. The order stays total for a broken tree — a dangling `parent_id` sorts as a root, and a parent cycle terminates rather than hanging the sort.
+
 ### Added
 
 - `super_auth_resources.super_auth_label`, a nullable column holding the human name of the application record a resource node points at, so the editor can render "Gulf War presumptive" where it rendered `Claim#3a00b6fa-2998-41ba-953f-a3b0de1876b3`. The label is stored rather than resolved at render time for three reasons: the editor reads bare Sequel models with no association to the application, `super_auth-editor` serves the same UI against a bare `SUPER_AUTH_DATABASE_URL` with no application loaded at all, and RLS makes exactly the largest protected resource types unreadable without an asserted identity — a live lookup would return empty labels for those and full labels for everything else, which reads as data rather than as a missing permission. The column carries the prefix for the same reason the opt-in method does: `label` is a name applications want for themselves. Migration 10 in both `db/migrate/` and `db/migrate_activerecord/`.

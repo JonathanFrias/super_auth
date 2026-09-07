@@ -153,7 +153,7 @@ RSpec.describe SuperAuth::Editor do
       )
     end
 
-    it "returns rows sorted by name with the documented keys per type" do
+    it "returns rows in tree order, not alphabetical order, with the documented keys per type" do
       parent = group("Zed")
       group("Alpha", parent: parent)
       role("Writer")
@@ -163,9 +163,10 @@ RSpec.describe SuperAuth::Editor do
       e = SuperAuth::Edge.create(user: SuperAuth::User.first, group: parent)
 
       body = parsed(get("/api/graph"))
-      expect(body["groups"].map { |g| g["name"] }).to eq %w[Alpha Zed]
+      # Alpha is Zed's child, so it follows its parent rather than sorting above it.
+      expect(body["groups"].map { |g| g["name"] }).to eq %w[Zed Alpha]
       expect(body["groups"].first.keys).to match_array %w[id name parent_id]
-      expect(body["groups"].first["parent_id"]).to eq parent.id
+      expect(body["groups"].last["parent_id"]).to eq parent.id
       expect(body["roles"].first.keys).to match_array %w[id name parent_id]
       expect(body["users"].first).to eq("id" => SuperAuth::User.first.id, "name" => "Bea", "external_id" => "7", "external_type" => "Account")
       expect(body["permissions"].first.keys).to match_array %w[id name]
@@ -182,6 +183,53 @@ RSpec.describe SuperAuth::Editor do
 
       labels = parsed(get("/api/graph"))["resources"].map { |r| r["super_auth_label"] }
       expect(labels).to match_array ["Gulf War presumptive", nil]
+    end
+
+    # The bug this order exists to prevent: a child whose name sorts between
+    # two unrelated roots used to be drawn indented under whichever root
+    # happened to land above it, which is the opposite of what the graph says.
+    it "places a child under its own parent, not under whatever sorts above it" do
+      organizations = group("Organizations")
+      group("Admins")
+      group("Lawyers")
+      group("Veterans")
+      group("org:451ed5a8", parent: organizations)
+
+      names = parsed(get("/api/graph"))["groups"].map { |g| g["name"] }
+      expect(names).to eq ["Admins", "Lawyers", "Organizations", "org:451ed5a8", "Veterans"]
+    end
+
+    it "orders roles the same way, with siblings alphabetical under each parent" do
+      writers = role("Writers")
+      role("Zed", parent: writers)
+      role("Alpha", parent: writers)
+      role("Readers")
+
+      names = parsed(get("/api/graph"))["roles"].map { |r| r["name"] }
+      expect(names).to eq %w[Readers Writers Alpha Zed]
+    end
+
+    # A dangling parent_id cannot be made through the API — the foreign key
+    # refuses it — so the guarantee that the order stays total for one is
+    # checked against the ordering itself.
+    it "sorts a row whose parent is missing as a root rather than dropping it" do
+      rows = [
+        { id: 1, name: "Alpha", parent_id: 404 },
+        { id: 2, name: "Zed", parent_id: nil },
+      ]
+
+      ordered = SuperAuth::Editor.new.send(:tree_order, rows)
+
+      expect(ordered.map { |r| r[:name] }).to eq %w[Alpha Zed]
+    end
+
+    it "terminates on a parent cycle instead of walking it forever" do
+      a = group("A")
+      b = group("B", parent: a)
+      db[:super_auth_groups].where(id: a.id).update(parent_id: b.id)
+
+      names = parsed(get("/api/graph"))["groups"].map { |g| g["name"] }
+      expect(names).to match_array %w[A B]
     end
   end
 

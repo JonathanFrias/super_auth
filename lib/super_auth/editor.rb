@@ -110,10 +110,37 @@ module SuperAuth
     end
 
     def nodes(model, *extra)
-      SuperAuth.const_get(model).order(:name, :id).map do |n|
+      rows = SuperAuth.const_get(model).order(:name, :id).map do |n|
         row = { id: n.id, name: n.name }
         extra.each { |column| row[column] = n[column] }
         row
+      end
+      extra.include?(:parent_id) ? tree_order(rows) : rows
+    end
+
+    # The nested types render as a flat list that fakes the tree with
+    # indentation, so a child has to arrive immediately after its parent or
+    # it reads as nested under whatever happens to sort above it — which is
+    # the one question an auditor opens this editor to answer. Sorting by the
+    # ancestors' [name, id] pairs, outermost first, puts every child under its
+    # own parent and leaves siblings alphabetical. Both node sets are small
+    # enough to order in Ruby, and the client's depthOf is unaffected.
+    #
+    # The key is total, so the order stays defined for broken trees: a row
+    # whose parent_id names a missing row sorts as a root, and a parent cycle
+    # stops at the first repeated id rather than walking forever.
+    def tree_order(rows)
+      by_id = rows.each_with_object({}) { |row, index| index[row[:id]] = row }
+      rows.sort_by do |row|
+        path = []
+        seen = {}
+        node = row
+        while node && !seen[node[:id]]
+          seen[node[:id]] = true
+          path.unshift([node[:name].to_s, node[:id]])
+          node = by_id[node[:parent_id]]
+        end
+        path
       end
     end
 
