@@ -11,3 +11,4 @@
 .rspec_status
 .chief/
 super_auth-*.gem
+.beads/
