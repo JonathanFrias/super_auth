@@ -26,6 +26,7 @@ module SuperAuth
       def enable(table, resource_type:, db: SuperAuth.db)
         postgres!(db)
         create_become_function(db)
+        grant_runtime_reads(db)
         t = db.literal(Sequel.identifier(table.to_s))
         db.run "ALTER TABLE #{t} ENABLE ROW LEVEL SECURITY"
         # FORCE: apply the policy even when the app connects as the table owner
@@ -89,6 +90,15 @@ module SuperAuth
       end
 
       private
+
+      # What any runtime role needs on the gem's own tables: the policies read
+      # super_auth_authorizations as the querying role, and the user models'
+      # system? reads super_auth_users. Granting PUBLIC makes enable the only
+      # setup step; a deployment that wants these tables private can REVOKE
+      # from PUBLIC and grant per role.
+      def grant_runtime_reads(db)
+        db.run "GRANT SELECT ON super_auth_authorizations, super_auth_users TO PUBLIC"
+      end
 
       # One shared function per database; clients assert identity by calling
       # it inside their transaction. CREATE OR REPLACE keeps enable

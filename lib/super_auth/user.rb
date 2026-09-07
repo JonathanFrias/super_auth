@@ -2,7 +2,9 @@ class SuperAuth::User < Sequel::Model(:super_auth_users)
   one_to_many :edges
   one_to_many :resources
 
-  def system? = self.class.system == self
+  # A read: runtime roles only get SELECT on this table. `.system` creates
+  # the row when missing and belongs to migrations, seeds and consoles.
+  def system? = self.class.first(name: "system") == self
   def self.system = find_or_create(name: "system")
 
   dataset_module do

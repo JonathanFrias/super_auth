@@ -108,6 +108,15 @@ RSpec.describe "Audit: ByCurrentUser and Authorization.compile!" do
       expect(resource_class.count).to eq 1
     end
 
+    it "B1: system? looks the system user up without creating it" do
+      ar_user = SuperAuth::ActiveRecord::User.create!(name: "someone")
+      sequel_user = SuperAuth::User.create(name: "someone else")
+
+      expect(ar_user.system?).to be false
+      expect(sequel_user.system?).to be false
+      expect(SuperAuth::ActiveRecord::User.where(name: "system")).not_to exist
+    end
+
     it "B1: a user record that merely has the name \"system\" does not bypass the scope" do
       pending "B1: system? is `name == \"system\"` on a nullable, non-unique, user-writable column; whoever is named system first is the system user"
       impostor = SuperAuth::ActiveRecord::User.create!(name: "system") # created by the app, an import, or the graph UI
