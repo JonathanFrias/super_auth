@@ -418,6 +418,211 @@ RSpec.describe SuperAuth::RLS do
         as_restricted_role { SuperAuth.as(SuperAuthRlsSpecSystemUser.new(1)) {} }
       }.to raise_error(Sequel::DatabaseError, /permission denied for function super_auth_system/)
     end
+
+    describe "both identities" do
+      after { SuperAuth.current_user = nil }
+
+      it "sets SuperAuth.current_user for the block and restores the previous value after it" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        outer = SuperAuthRlsSpecUser.new(7)
+        SuperAuth.current_user = outer
+        inside = nil
+
+        names = as_restricted_role do
+          SuperAuth.as(SuperAuthRlsSpecUser.new(42)) do
+            inside = SuperAuth.current_user
+            doc_names
+          end
+        end
+
+        expect(inside.id).to eq(42)
+        expect(names).to eq(["doc1"])
+        expect(SuperAuth.current_user).to equal(outer)
+      end
+
+      it "restores both after the block raises" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        outer = SuperAuthRlsSpecUser.new(7)
+        SuperAuth.current_user = outer
+
+        expect {
+          as_restricted_role { SuperAuth.as(SuperAuthRlsSpecUser.new(42)) { raise "boom" } }
+        }.to raise_error(RuntimeError, "boom")
+
+        expect(SuperAuth.current_user).to equal(outer)
+        expect(doc_names).to eq([])
+      end
+
+      it "nests: the inner identity wins inside and the outer one is back afterwards" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        grant(user_external_id: 43, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc2_id)
+        inner = outer = nil
+
+        as_restricted_role do
+          SuperAuth.as(SuperAuthRlsSpecUser.new(42)) do
+            SuperAuth.as(SuperAuthRlsSpecUser.new(43)) do
+              inner = [doc_names, SuperAuth.current_user.id]
+            end
+            outer = [doc_names, SuperAuth.current_user.id]
+          end
+        end
+
+        expect(inner).to eq([["doc2"], 43])
+        expect(outer).to eq([["doc1"], 42])
+        expect(SuperAuth.current_user).to be_nil
+      end
+
+      it "restores the outer identity when the nested block raises" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        grant(user_external_id: 43, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc2_id)
+
+        outer = as_restricted_role do
+          SuperAuth.as(SuperAuthRlsSpecUser.new(42)) do
+            begin
+              SuperAuth.as(SuperAuthRlsSpecUser.new(43)) { raise "inner" }
+            rescue RuntimeError
+            end
+            [doc_names, SuperAuth.current_user.id]
+          end
+        end
+
+        expect(outer).to eq([["doc1"], 42])
+      end
+
+      it "asserts system context in both layers" do
+        inside = as_restricted_role(:super_auth_rls_spec_system) do
+          SuperAuth.as(SuperAuthRlsSpecSystemUser.new(1)) { [doc_names, SuperAuth.current_user.system?] }
+        end
+        expect(inside).to eq([["doc1", "doc2"], true])
+        expect(SuperAuth.current_user).to be_nil
+      end
+
+      it "runs the block with no user in either layer for nil, then restores" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        SuperAuth.current_user = SuperAuthRlsSpecUser.new(42)
+
+        inside = as_restricted_role { SuperAuth.as(nil) { [doc_names, SuperAuth.current_user] } }
+
+        expect(inside).to eq([[], nil])
+        expect(SuperAuth.current_user.id).to eq(42)
+      end
+
+      describe "transaction options" do
+        let(:user) { SuperAuthRlsSpecUser.new(42) }
+
+        before { grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser") } # type-level: may INSERT
+
+        it "makes nested transactions savepoints with auto_savepoint: true" do
+          as_restricted_role do
+            SuperAuth.as(user, auto_savepoint: true) do
+              db.transaction do
+                db[:documents].insert(name: "doc3")
+                raise Sequel::Rollback
+              end
+              db[:documents].insert(name: "doc4")
+            end
+          end
+          expect(all_doc_names).to eq(["doc1", "doc2", "doc4"])
+        end
+
+        it "joins nested transactions by default, so a nested rollback rolls back the whole block" do
+          as_restricted_role do
+            SuperAuth.as(user) do
+              db.transaction do
+                db[:documents].insert(name: "doc3")
+                raise Sequel::Rollback
+              end
+              db[:documents].insert(name: "doc4")
+            end
+          end
+          expect(all_doc_names).to eq(["doc1", "doc2"])
+        end
+
+        it "fires ActiveRecord after_commit per save inside the block with auto_savepoint: true, and only after it otherwise" do
+          skip "requires the sequel-activerecord_connection bridge" unless db.respond_to?(:activerecord_model)
+          fired = []
+          document_model = Class.new(::ActiveRecord::Base) { self.table_name = "documents" }
+          document_model.after_commit { |record| fired << record.name }
+
+          inside = nil
+          as_restricted_role do
+            SuperAuth.as(user, auto_savepoint: true) do
+              document_model.create!(name: "doc3")
+              inside = fired.dup
+            end
+          end
+          expect(inside).to eq(["doc3"])
+
+          fired.clear
+          as_restricted_role do
+            SuperAuth.as(user) do
+              document_model.create!(name: "doc4")
+              inside = fired.dup
+            end
+          end
+          expect(inside).to eq([])
+          expect(fired).to eq(["doc4"])
+          expect(all_doc_names).to eq(["doc1", "doc2", "doc3", "doc4"])
+        end
+
+        it "commits what the block wrote before it raised with on_error: :commit, then re-raises" do
+          expect {
+            as_restricted_role do
+              SuperAuth.as(user, on_error: :commit) do
+                db[:documents].insert(name: "doc3")
+                raise "after the write"
+              end
+            end
+          }.to raise_error(RuntimeError, "after the write")
+          expect(all_doc_names).to eq(["doc1", "doc2", "doc3"])
+          expect(SuperAuth.current_user).to be_nil
+        end
+
+        it "rolls back what the block wrote before it raised by default" do
+          expect {
+            as_restricted_role do
+              SuperAuth.as(user) do
+                db[:documents].insert(name: "doc3")
+                raise "after the write"
+              end
+            end
+          }.to raise_error(RuntimeError, "after the write")
+          expect(all_doc_names).to eq(["doc1", "doc2"])
+        end
+
+        it "still rolls back on Sequel::Rollback with on_error: :commit" do
+          as_restricted_role do
+            SuperAuth.as(user, on_error: :commit) do
+              db[:documents].insert(name: "doc3")
+              raise Sequel::Rollback
+            end
+          end
+          expect(all_doc_names).to eq(["doc1", "doc2"])
+        end
+
+        it "rejects an unknown on_error before touching the database" do
+          expect { SuperAuth.as(user, on_error: :ignore) {} }.to raise_error(ArgumentError, /on_error/)
+        end
+      end
+
+      it "joins an enclosing transaction and leaves commit or rollback to it" do
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser") # type-level: may INSERT
+        as_restricted_role do
+          db.transaction do
+            begin
+              SuperAuth.as(SuperAuthRlsSpecUser.new(42)) do
+                db[:documents].insert(name: "doc3")
+                raise "after the write"
+              end
+            rescue RuntimeError
+              # the caller chose to commit anyway
+            end
+          end
+        end
+
+        expect(all_doc_names).to eq(["doc1", "doc2", "doc3"])
+      end
+    end
   end
 
   describe ".enable on a non-Postgres database" do
@@ -426,6 +631,18 @@ RSpec.describe SuperAuth::RLS do
       expect {
         described_class.enable(:documents, resource_type: "Document", db: sqlite)
       }.to raise_error(SuperAuth::Error, /requires Postgres/)
+    end
+
+    it "SuperAuth.as raises too and leaves current_user untouched" do
+      SuperAuth.db # the models bind to the first Sequel::Database created
+      sqlite = Sequel.sqlite
+      SuperAuth.current_user = :before
+      expect {
+        SuperAuth.as(:someone, db: sqlite) {}
+      }.to raise_error(SuperAuth::Error, /requires Postgres/)
+      expect(SuperAuth.current_user).to eq(:before)
+    ensure
+      SuperAuth.current_user = nil
     end
   end
 end

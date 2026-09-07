@@ -128,8 +128,8 @@ RSpec.describe "Audit: ByCurrentUser and Authorization.compile!" do
   end
 
   describe "B2: which current_user classes count as internal" do
+    # Fixed 2026-09-07: both layers use SuperAuth.internal_user?. Kept as a tripwire.
     it "B2: a Sequel SuperAuth::User is matched on user_id like its ActiveRecord twin" do
-      pending "B2: ByCurrentUser only recognises SuperAuth::ActiveRecord::User; a Sequel SuperAuth::User is treated as external and silently sees nothing (RLS accepts both)"
       user = SuperAuth::User.create(name: "sequel user")
       r1 = resource_class.create!(name: "r1")
       grant(user, r1)

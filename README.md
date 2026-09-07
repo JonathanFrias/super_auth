@@ -202,9 +202,15 @@ SuperAuth.as(current_user) do
 end
 ```
 
-`SuperAuth.as` opens a transaction and calls `super_auth_become` for you — use it in
-an `around_action` (or around a job) to cover a whole request. Non-Ruby apps use the
-SQL contract directly. Each policy checks `super_auth_authorizations` with the same
+`SuperAuth.as` sets `SuperAuth.current_user` for the block as well, so the
+`ByCurrentUser` scope and the policies agree, and restores both on the way out, nested
+calls included. It opens a transaction and calls `super_auth_become` for you, or joins
+the transaction you are already in — use it in an `around_action` (or around a job) to
+cover a whole request. Two options cover what a request or job wrapper usually needs:
+`auto_savepoint: true` makes every nested transaction a savepoint (ActiveRecord's
+`joinable: false`), so each save inside commits on its own and its `after_commit`
+hooks fire then; `on_error: :commit` keeps what the block wrote before it raised, then
+re-raises. Non-Ruby apps use the SQL contract directly. Each policy checks `super_auth_authorizations` with the same
 semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
 act as a wildcard, per-record authorizations match on id. Any object with an `id`
 works as the user, including SuperAuth's own user records. For a user whose `system?`

@@ -90,8 +90,9 @@ RSpec.describe "Audit: row-level security" do
   let!(:doc2_id) { db[:documents].insert(name: "doc2") }
 
   describe "C1: nested SuperAuth.as" do
+    # Fixed 2026-09-07: RLS.as reads the enclosing identity when nested and
+    # puts it back on exit. Kept as a tripwire.
     it "C1: restores the outer identity after a nested SuperAuth.as returns" do
-      pending "C1: the inner assertion overwrites the transaction-local settings and nothing restores them; the outer block continues as the inner user"
       grant(user_external_id: 1, user_external_type: "AuditRlsUser", resource_external_id: doc1_id)
       grant(user_external_id: 2, user_external_type: "AuditRlsUser", resource_external_id: doc2_id)
 

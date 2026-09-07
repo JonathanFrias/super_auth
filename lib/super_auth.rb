@@ -95,11 +95,27 @@ module SuperAuth
     raise Error, "Failed to uninstall migrations: #{e.message}"
   end
 
-  # Run the block with `user`'s identity asserted inside a database
-  # transaction, so RLS policies (see SuperAuth::RLS) enforce authorization
-  # for every query in the block. Postgres only.
-  def self.as(user, db: SuperAuth.db, &block)
-    SuperAuth::RLS.as(user, db: db, &block)
+  # Run the block as `user` in both layers: SuperAuth.current_user, which the
+  # ByCurrentUser scope reads, and the database identity the RLS policies read
+  # (see SuperAuth::RLS.as). Both are restored on the way out, whether the
+  # block returns, raises, or was nested inside another `as`. Passing nil runs
+  # the block with no user in either layer. Postgres only, since the database
+  # half is; on other databases it raises before touching anything. Keyword
+  # options (auto_savepoint:, on_error:, ...) go to SuperAuth::RLS.as.
+  def self.as(user, db: SuperAuth.db, **options, &block)
+    previous = current_user
+    self.current_user = user
+    SuperAuth::RLS.as(user, db: db, **options, &block)
+  ensure
+    self.current_user = previous
+  end
+
+  # Both user models are internal: their id is the user_id that the policies
+  # and ByCurrentUser match on. Anything else is an application object,
+  # matched by id and class name.
+  def self.internal_user?(user)
+    (defined?(SuperAuth::ActiveRecord::User) && user.is_a?(SuperAuth::ActiveRecord::User)) ||
+      (defined?(SuperAuth::User) && user.is_a?(SuperAuth::User))
   end
 
   def self.current_user=(user)

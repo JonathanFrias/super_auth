@@ -87,26 +87,63 @@ module SuperAuth
       # connection, so the policies see the identity; it dies with the
       # transaction. A user whose `system?` is true asserts system context
       # through super_auth_system() instead, which the connection's role
-      # must have been granted EXECUTE on. In nested calls the innermost
-      # assertion wins for the rest of the outer transaction.
-      def as(user, db: SuperAuth.db)
+      # must have been granted EXECUTE on.
+      #
+      # Inside an enclosing transaction (the caller's, or an outer `as`) it
+      # joins that transaction instead of opening one, and it puts the
+      # enclosing identity back when the block ends, however it ends: the
+      # innermost assertion wins inside the block and nothing else afterwards.
+      # This touches only the database settings; SuperAuth.as is the call that
+      # also sets SuperAuth.current_user.
+      #
+      # Transaction options pass through to Sequel's transaction. Two matter
+      # for a wrapper that exists only to carry an identity:
+      #   auto_savepoint: true   every nested transaction becomes a savepoint
+      #                          (the ActiveRecord bridge turns this into
+      #                          joinable: false), so a save inside the block
+      #                          commits on its own and its after_commit hooks
+      #                          fire then, not at the end of the block.
+      #   on_error: :commit      commit what the block wrote before it raised,
+      #                          then re-raise; the default :rollback discards
+      #                          it. A Sequel::Rollback always rolls back.
+      def as(user, db: SuperAuth.db, on_error: :rollback, **transaction_options)
+        unless %i[rollback commit].include?(on_error)
+          raise ArgumentError, "on_error must be :rollback or :commit, got #{on_error.inspect}"
+        end
         postgres!(db)
         internal_id = external_id = external_type = nil
         system = user.respond_to?(:system?) && !!user.system?
-        if user && internal_user?(user)
+        if user && SuperAuth.internal_user?(user)
           internal_id = user.id.to_s
         elsif user
           external_id = user.id.to_s
           external_type = user.class.name
         end
-        db.transaction do
+        # Outside a transaction the settings die at COMMIT and there is nothing
+        # to restore; inside one, the enclosing identity must survive the block.
+        enclosing = db.in_transaction? ? identity(db) : nil
+        raised = nil
+        result = db.transaction(**transaction_options) do
           if system
             db.get(Sequel.function(:super_auth_system))
           else
             db.get(Sequel.function(:super_auth_become, external_id, external_type, internal_id))
           end
-          yield
+          begin
+            yield
+          rescue Sequel::Rollback
+            raise
+          rescue StandardError => e
+            raise unless on_error == :commit
+            raised = e
+            nil
+          ensure
+            restore(enclosing, db) if enclosing
+          end
         end
+        raise raised if raised
+
+        result
       end
 
       # Allow `role` to assert system context: SuperAuth.as with a user whose
@@ -179,9 +216,23 @@ module SuperAuth
         db.run "REVOKE EXECUTE ON FUNCTION super_auth_system() FROM PUBLIC"
       end
 
-      def internal_user?(user)
-        (defined?(SuperAuth::ActiveRecord::User) && user.is_a?(SuperAuth::ActiveRecord::User)) ||
-          (defined?(SuperAuth::User) && user.is_a?(SuperAuth::User))
+      # The five transaction-local settings the policies read, in one order.
+      SETTINGS = %w[
+        super_auth.user_id super_auth.user_external_id super_auth.user_external_type
+        super_auth.system super_auth.xid
+      ].freeze
+
+      def identity(db)
+        db.dataset.get(SETTINGS.each_with_index.map { |name, i| Sequel.function(:current_setting, name, true).as(:"s#{i}") })
+      end
+
+      # Writes the settings back directly: the values were read from this same
+      # transaction, so the stamp is still the current one, and no role is
+      # granted anything it could not already set.
+      def restore(values, db)
+        db.dataset.get(SETTINGS.zip(values).each_with_index.map { |(name, value), i| Sequel.function(:set_config, name, value.to_s, true).as(:"s#{i}") })
+      rescue Sequel::DatabaseError
+        # The block aborted the transaction; its rollback discards the settings.
       end
 
       def postgres!(db)

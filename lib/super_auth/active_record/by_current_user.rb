@@ -30,7 +30,7 @@ module SuperAuth::ActiveRecord::ByCurrentUser
         self
       else
         user_where =
-        if SuperAuth.current_user.is_a?(SuperAuth::ActiveRecord::User)
+        if SuperAuth.internal_user?(SuperAuth.current_user)
           { user_id: SuperAuth.current_user.id }
         else
           { user_external_id: SuperAuth.current_user.id, user_external_type: SuperAuth.current_user.class.name }

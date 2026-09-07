@@ -9,12 +9,17 @@
 - A graph editor, Rails-free, shipped as a mountable Rack app (`SuperAuth::Editor`, `require "super_auth/editor"`) and a command (`super_auth-editor`) that serves it on loopback against `SUPER_AUTH_DATABASE_URL`, with `--migrate` and `--seed` as explicit, opt-in steps. Five boxes with client-side traversal, node and edge CRUD, and a Recompile button. It has no authentication of its own: mount it inside yours. Writes must be JSON, only the eight edge kinds the path strategies read can be created, and the command rejects foreign `Host` headers.
 - `SuperAuth::Authorization.compile!` for applications without ActiveRecord, and `POST /api/compile` in the editor. Runtime enforcement reads only the compiled table, so every graph edit is inert until it runs.
 
+### Fixed
+
+- `ByCurrentUser` now recognises a Sequel `SuperAuth::User` as an internal user and matches it on `user_id`, as the RLS policies already did; before, it was treated as an external object and silently saw nothing. Both layers share `SuperAuth.internal_user?`.
+
 ### Removed
 
 - The d3 graph visualizer: `SuperAuth::GraphController`, its view, its JSON API (`/graph/data`, `/graph/authorize`, `/graph/orphaned`, `/graph/compile_authorizations`, and the `/graph/*` create and delete routes), `visualization.html`, and `VISUALIZATION.md`. `mount SuperAuth::Engine => "/super_auth"` now serves the graph editor at that path; it has no authentication of its own, so mount it inside yours. Anything that called the old JSON routes must move to the editor's API or to the models.
 
 ### Changed
 
+- `SuperAuth.as(user)` now carries both identities: it sets `SuperAuth.current_user` (read by the `ByCurrentUser` scope) for the block as well as asserting the database identity (read by the RLS policies), and restores both on the way out, on return, on raise, and when nested. `SuperAuth::RLS.as` stays the pure SQL-contract wrapper and now restores the enclosing database identity when it is nested inside a transaction, so an inner block can no longer leave the outer one running as its user. Inside a transaction the caller opened, `as` joins it. Two options replace the wrapper an application used to need: `auto_savepoint: true` makes every nested transaction a savepoint (the ActiveRecord bridge turns it into `joinable: false`), so a save inside the block commits on its own and its `after_commit` hooks fire then; `on_error: :commit` commits what the block wrote before it raised and then re-raises (the default rolls back; `Sequel::Rollback` always rolls back). Other keyword options pass through to Sequel's `transaction`. Behaviour change: `SuperAuth.as(nil)` runs the block with `current_user = nil`, so apps with `missing_user_behavior = :raise` now raise on scoped queries inside an anonymous block instead of inheriting whatever the thread-local held before. Clients that probe for the identity function must look for `super_auth_become(text, text, text)`; the four-argument signature is gone (see Security above).
 - `SuperAuth::RLS.enable` grants `SELECT` on `super_auth_authorizations` and `super_auth_users` to `PUBLIC`, so a runtime role needs privileges on the application's tables and nothing else; `SuperAuth::RLS.grant_system(role)` hands out the bypass without hand-written SQL. `system?` on both user models is now a read-only lookup (`.system` still creates the row), so passing SuperAuth user records to `SuperAuth.as` never needs `INSERT`.
 
 ## [0.4.0] - 2026-09-02
