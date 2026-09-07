@@ -42,6 +42,23 @@ module SuperAuth
     external_id_type == :string ? String : external_id_type
   end
 
+  # The human name of the application record behind a node, by convention
+  # rather than configuration: a model says it explicitly with
+  # `super_auth_label`, otherwise `name` then `title` are tried, and a model
+  # with none of them has no label. This is also the name of the column the
+  # derivation is stored in, since `label` is a name applications want for
+  # themselves. Deliberately never `to_s` — the label sits where the editor
+  # otherwise renders `Type#id`, and "#<Claim:0x000055…>" is worse than the id
+  # it would replace.
+  def self.label_for(record)
+    %i[super_auth_label name title].each do |method|
+      next unless record.respond_to?(method)
+      value = record.public_send(method)
+      return value.to_s unless value.nil? || value.to_s.empty?
+    end
+    nil
+  end
+
   def self.load
     require "super_auth/authorization"
     require "super_auth/edge"

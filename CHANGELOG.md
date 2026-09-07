@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-07
+
+### Added
+
+- `super_auth_resources.super_auth_label`, a nullable column holding the human name of the application record a resource node points at, so the editor can render "Gulf War presumptive" where it rendered `Claim#3a00b6fa-2998-41ba-953f-a3b0de1876b3`. The label is stored rather than resolved at render time for three reasons: the editor reads bare Sequel models with no association to the application, `super_auth-editor` serves the same UI against a bare `SUPER_AUTH_DATABASE_URL` with no application loaded at all, and RLS makes exactly the largest protected resource types unreadable without an asserted identity — a live lookup would return empty labels for those and full labels for everything else, which reads as data rather than as a missing permission. The column carries the prefix for the same reason the opt-in method does: `label` is a name applications want for themselves. Migration 10 in both `db/migrate/` and `db/migrate_activerecord/`.
+- `SuperAuth.label_for(record)` derives that name by convention rather than configuration: `super_auth_label` if the model defines it, then `name`, then `title`. Never `to_s` — the label sits where `Type#id` otherwise renders, and `#<Claim:0x000055…>` is worse than the id it would replace.
+- `SuperAuth::ActiveRecord::Resource` derives its label on save, so a host that already syncs resource nodes gets labels with no extra wiring, and `#refresh_label!` re-derives it after the application record is renamed, which does not write the node. A nil derivation never overwrites a stored label: RLS blanking the record, an `external_type` naming a class this process has not loaded, and a type-level row (`external_id IS NULL`) all derive nil, and none of them means the record has no name.
+- The editor renders the label in the slot that held `Type#id`, demoting `Type#id` to the tooltip, and falls back to today's rendering for a node without one. Its per-box filter now matches everything a row carries — name, label, `external_type` and `external_id` — so a pasted uuid finds its node, which it never did before: the filter only ever looked at `name`.
+- `rake super_auth:labels:backfill` labels existing rows and repairs drift. It asserts the system identity where RLS is installed, because the application tables it reads are the ones RLS protects — run without an identity it would derive nil for the rows that matter most and report success.
+
+A stored label is a snapshot. It drifts between the application record being renamed and the next `refresh_label!` or backfill, and that is the trade: a stale or missing label degrades to the `Type#id` the editor rendered before, never to something wrong. `super_auth_users.name` has always been a denormalized label of the same kind and never refreshes at all, so this is the existing idea finished rather than a new one.
+
+Users are out of scope: `super_auth_users.name` already carries a human name, so user nodes already read as "Jonathan Frias" in the editor. Groups, roles and permissions encode their application link in host-specific name conventions and are a separate job.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added

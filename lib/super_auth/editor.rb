@@ -103,7 +103,7 @@ module SuperAuth
         roles: nodes(:Role, :parent_id),
         users: nodes(:User, :external_id, :external_type),
         permissions: nodes(:Permission),
-        resources: nodes(:Resource, :external_id, :external_type),
+        resources: nodes(:Resource, :external_id, :external_type, :super_auth_label),
         edges: SuperAuth::Edge.order(:id).map { |e| edge_json(e) },
         authorizations_count: SuperAuth::Authorization.count,
       }

@@ -169,11 +169,19 @@ RSpec.describe SuperAuth::Editor do
       expect(body["roles"].first.keys).to match_array %w[id name parent_id]
       expect(body["users"].first).to eq("id" => SuperAuth::User.first.id, "name" => "Bea", "external_id" => "7", "external_type" => "Account")
       expect(body["permissions"].first.keys).to match_array %w[id name]
-      expect(body["resources"].first.keys).to match_array %w[id name external_id external_type]
+      expect(body["resources"].first.keys).to match_array %w[id name external_id external_type super_auth_label]
       expect(body["edges"]).to eq [{
         "id" => e.id, "user_id" => SuperAuth::User.first.id, "group_id" => parent.id,
         "role_id" => nil, "permission_id" => nil, "resource_id" => nil,
       }]
+    end
+
+    it "carries the stored label, which is what the editor renders in place of Type#id" do
+      SuperAuth::Resource.create(name: "Claim", external_id: "9", external_type: "Claim", super_auth_label: "Gulf War presumptive")
+      SuperAuth::Resource.create(name: "Claim", external_id: "10", external_type: "Claim")
+
+      labels = parsed(get("/api/graph"))["resources"].map { |r| r["super_auth_label"] }
+      expect(labels).to match_array ["Gulf War presumptive", nil]
     end
   end
 

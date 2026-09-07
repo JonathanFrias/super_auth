@@ -234,7 +234,7 @@ function render(){
     if(relevant) list = list.filter(n => relevant.has(key(type,n.id)));
     // per-box text filter
     const f = (boxFilters[area]||"").toLowerCase();
-    let shown = f ? list.filter(n => (n.name||"").toLowerCase().includes(f)) : list;
+    let shown = f ? list.filter(n => haystack(n).includes(f)) : list;
 
     const total = GRAPH[byType(type)].length;
     const countTxt = (relevant || f) ? `${shown.length}/${total}` : `${total}`;
@@ -246,7 +246,13 @@ function render(){
       const pad = depth ? `style="padding-left:${8+depth*14}px"` : "";
       const arrow = depth ? `<span class="depth">${"└".padStart(1)} </span>` : "";
       const name = n.name ?? "";
-      const ext = n.external_type ? `<span class="ext" title="external record">${escapeHtml(n.external_type)}#${escapeHtml(n.external_id ?? "*")}</span>` : "";
+      // The external record occupies one slot: its label when the graph
+      // stored one, otherwise the Type#id that used to be the only
+      // rendering. Either way the other half is the tooltip.
+      const ref = n.external_type ? `${escapeHtml(n.external_type)}#${escapeHtml(n.external_id ?? "*")}` : "";
+      const ext = !ref ? "" : (n.super_auth_label
+        ? `<span class="ext" title="${ref}">${escapeHtml(n.super_auth_label)}</span>`
+        : `<span class="ext" title="external record">${ref}</span>`);
       return `<div class="item ${isSel?'selected':''} ${isCF?'connect-first':''}" data-id="${n.id}" ${pad}>
         <span class="tick"></span>
         ${arrow}<span class="name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${ext}
@@ -403,6 +409,9 @@ document.getElementById("btn-reload").addEventListener("click", load);
 document.getElementById("btn-compile").addEventListener("click", compile);
 
 // ---- utils ----
+// Everything a row renders is searchable, including what the tooltip holds:
+// a labelled node keeps its Type#id there, and pasting a uuid has to find it.
+function haystack(n){ const ref=[n.external_type,n.external_id].filter(Boolean).join("#"); return [n.name,n.super_auth_label,ref].filter(Boolean).join(" ").toLowerCase(); }
 function nameFor(t,id){ const x=GRAPH[byType(t)].find(n=>n.id===id); return x?(x.name ?? "#"+id):("#"+id); }
 function setHint(html){ document.getElementById("hint").innerHTML=html; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
