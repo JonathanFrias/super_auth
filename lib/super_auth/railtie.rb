@@ -3,8 +3,6 @@ module SuperAuth
     class Engine < Rails::Engine
       isolate_namespace SuperAuth
 
-      config.paths.add 'app/controllers', eager_load: true
-
       # Use ActiveRecord migrations when in a Rails environment
       if defined?(ActiveRecord)
         config.paths['db/migrate'] = 'db/migrate_activerecord'

@@ -9,6 +9,10 @@
 - A graph editor, Rails-free, shipped as a mountable Rack app (`SuperAuth::Editor`, `require "super_auth/editor"`) and a command (`super_auth-editor`) that serves it on loopback against `SUPER_AUTH_DATABASE_URL`, with `--migrate` and `--seed` as explicit, opt-in steps. Five boxes with client-side traversal, node and edge CRUD, and a Recompile button. It has no authentication of its own: mount it inside yours. Writes must be JSON, only the eight edge kinds the path strategies read can be created, and the command rejects foreign `Host` headers.
 - `SuperAuth::Authorization.compile!` for applications without ActiveRecord, and `POST /api/compile` in the editor. Runtime enforcement reads only the compiled table, so every graph edit is inert until it runs.
 
+### Removed
+
+- The d3 graph visualizer: `SuperAuth::GraphController`, its view, its JSON API (`/graph/data`, `/graph/authorize`, `/graph/orphaned`, `/graph/compile_authorizations`, and the `/graph/*` create and delete routes), `visualization.html`, and `VISUALIZATION.md`. `mount SuperAuth::Engine => "/super_auth"` now serves the graph editor at that path; it has no authentication of its own, so mount it inside yours. Anything that called the old JSON routes must move to the editor's API or to the models.
+
 ### Changed
 
 - `SuperAuth::RLS.enable` grants `SELECT` on `super_auth_authorizations` and `super_auth_users` to `PUBLIC`, so a runtime role needs privileges on the application's tables and nothing else; `SuperAuth::RLS.grant_system(role)` hands out the bypass without hand-written SQL. `system?` on both user models is now a read-only lookup (`.system` still creates the row), so passing SuperAuth user records to `SuperAuth.as` never needs `INSERT`.

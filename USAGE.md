@@ -95,14 +95,18 @@ Post.all                        # only posts the current user can access
 Post.where(published: true)     # scoped AND filtered by authorization
 ```
 
-**Step 6 (optional).** Mount the visualization engine:
+**Step 6 (optional).** Mount the engine, which serves the graph editor. It has no
+authentication of its own, so mount it inside yours:
 
 ```ruby
 # config/routes.rb
-mount SuperAuth::Engine => '/super_auth'
+authenticate :admin do                 # Devise; or a constraints block
+  mount SuperAuth::Engine => '/super_auth'
+end
 ```
 
-Then visit `http://localhost:3000/super_auth/visualization` to see your authorization graph.
+Then open `http://localhost:3000/super_auth` to edit the graph. Edits take effect at
+runtime after **Recompile** (or `SuperAuth::ActiveRecord::Authorization.compile!`).
 
 ### Standalone Setup (without Rails)
 
@@ -533,24 +537,22 @@ deployers.map { |a| a[:user_name] }.uniq
 
 ## Visualization
 
-SuperAuth includes an interactive graph visualization UI. After mounting the engine:
+The graph editor shows the whole graph as five boxes (groups, roles, users,
+permissions, resources); click any record to trace what it can reach and what reaches
+it, connect records to draw edges, delete records and edges, and recompile. See the
+README's "Graph editor" section for the full description.
 
-```ruby
-# config/routes.rb
-mount SuperAuth::Engine => '/super_auth'
-```
+- Rails: mount the engine inside your own authentication (Step 6 above) and open
+  `http://localhost:3000/super_auth`.
+- Anywhere else: `super_auth-editor` serves it on loopback against
+  `SUPER_AUTH_DATABASE_URL`, or `require "super_auth/editor"` and mount
+  `SuperAuth::Editor` in any Rack app, inside your authentication.
 
-Load sample data (optional):
+Load sample data (optional, Rails):
 
 ```bash
 rails runner "load File.join(SuperAuth::Engine.root, 'db/seeds/sample_data.rb')"
 ```
-
-Visit `http://localhost:3000/super_auth/visualization` to see:
-
-- Color-coded nodes for each entity type
-- Interactive path finding
-- Real-time authorization queries
 
 ## Full Example
 

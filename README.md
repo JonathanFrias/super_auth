@@ -46,6 +46,18 @@ has none), `--seed` (replace the whole graph with a sample company, destructive)
 > localhost. When you mount the app in your own server, put your own authentication in
 > front of it, as below.
 
+In Rails the engine serves it. Mount the engine inside your own authentication:
+
+```ruby
+# config/routes.rb
+authenticate :admin do                          # Devise; or a constraints block
+  mount SuperAuth::Engine => "/super_auth"
+end
+```
+
+Or mount the app itself anywhere: `require "super_auth/editor"` and
+`mount SuperAuth::Editor => "/wherever"`, again inside your authentication.
+
 Mount it in any Rack app:
 
 ```ruby
@@ -65,35 +77,6 @@ that table's row count, and **Recompile** runs `SuperAuth::Authorization.compile
 `POST /api/nodes/:type`, `DELETE /api/nodes/:type/:id`, `POST /api/edges`,
 `DELETE /api/edges/:id`, `POST /api/compile`. Writes must be `application/json`, and
 the editor only creates edges of the eight kinds the path strategies read.
-
-## Graph Visualization
-
-SuperAuth includes an interactive graph visualization tool to help you understand and debug your authorization rules!
-
-![SuperAuth Visualization](https://img.shields.io/badge/Visualization-Interactive-brightgreen)
-
-See the complete authorization graph with:
-- Color-coded nodes (Users, Groups, Roles, Permissions, Resources)
-- Interactive path finding
-- Real-time authorization queries
-- Example scenarios from the README
-
-**Quick Start:**
-
-```bash
-# 1. Generate initializer
-rails generate super_auth:install
-
-# 2. Mount the engine in config/routes.rb
-mount SuperAuth::Engine => '/super_auth'
-
-# 3. Load sample data (optional)
-rails runner "load File.join(SuperAuth::Engine.root, 'db/seeds/sample_data.rb')"
-```
-
-Then visit: `http://localhost:3000/super_auth/visualization`
-
-See [VISUALIZATION.md](VISUALIZATION.md) for complete documentation.
 
 ## Postgres Row-Level Security (optional)
 
