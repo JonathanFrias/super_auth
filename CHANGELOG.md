@@ -4,6 +4,11 @@
 
 - Row-level security: the system bypass is no longer a parameter of `super_auth_become()`. It moved to a separate function, `super_auth_system()`, whose `EXECUTE` privilege `enable` revokes from `PUBLIC`, so the right to bypass every policy is granted per role (`GRANT EXECUTE ON FUNCTION super_auth_system() TO <role>`) instead of coming with the right to assert an identity. `SuperAuth.as(user)` calls it for users whose `system?` is true. Both functions now raise if the calling role is a superuser or has `BYPASSRLS`, because Postgres exempts those roles from row security and the assertion would protect nothing. Breaking for clients that call the SQL directly: `super_auth_become(...)` takes three arguments and the four-argument overload is dropped on the next `enable`; roles that bypass need the grant above.
 
+### Added
+
+- A graph editor, Rails-free, shipped as a mountable Rack app (`SuperAuth::Editor`, `require "super_auth/editor"`) and a command (`super_auth-editor`) that serves it on loopback against `SUPER_AUTH_DATABASE_URL`, with `--migrate` and `--seed` as explicit, opt-in steps. Five boxes with client-side traversal, node and edge CRUD, and a Recompile button. It has no authentication of its own: mount it inside yours. Writes must be JSON, only the eight edge kinds the path strategies read can be created, and the command rejects foreign `Host` headers.
+- `SuperAuth::Authorization.compile!` for applications without ActiveRecord, and `POST /api/compile` in the editor. Runtime enforcement reads only the compiled table, so every graph edit is inert until it runs.
+
 ### Changed
 
 - `SuperAuth::RLS.enable` grants `SELECT` on `super_auth_authorizations` and `super_auth_users` to `PUBLIC`, so a runtime role needs privileges on the application's tables and nothing else; `SuperAuth::RLS.grant_system(role)` hands out the bypass without hand-written SQL. `system?` on both user models is now a read-only lookup (`.system` still creates the row), so passing SuperAuth user records to `SuperAuth.as` never needs `INSERT`.

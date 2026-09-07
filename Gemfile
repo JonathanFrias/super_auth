@@ -15,4 +15,9 @@ group :development, :test do
   gem "activerecord"
   gem "sequel-activerecord_connection"
   gem "after_commit_everywhere"
+  # Rack::MockRequest and Rack::Lint for the editor specs, and a server for
+  # exe/super_auth-editor. The gem itself depends on none of them.
+  gem "rack"
+  gem "rackup"
+  gem "webrick"
 end

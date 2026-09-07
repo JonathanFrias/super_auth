@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperAuth · Graph Editor</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#161a20; --panel-2:#1b2028; --line:#272e38;
+    --ink:#e9e7e1; --ink-soft:#9aa1ac; --ink-faint:#646b76;
+    --brass:#d4a84b;
+    --c-group:#49b3a3; --c-user:#d4a84b; --c-role:#a888dc; --c-perm:#5b9bd4; --c-resource:#d67d6b;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;display:flex;flex-direction:column;overflow:hidden}
+  button{font-family:inherit;cursor:pointer}
+  ::selection{background:var(--brass);color:#161206}
+
+  /* ---- header ---- */
+  header{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
+  .brand{font-family:var(--mono);font-weight:700;letter-spacing:-.02em;display:flex;align-items:center;gap:9px;font-size:15px}
+  .brand .dot{width:12px;height:12px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 3px rgba(212,168,75,.18)}
+  .tools{display:flex;gap:8px;margin-left:6px}
+  .tbtn{background:transparent;border:1px solid var(--line);color:var(--ink-soft);border-radius:7px;padding:7px 12px;font-size:12.5px;font-family:var(--mono);transition:all .15s}
+  .tbtn:hover{border-color:var(--brass);color:var(--ink)}
+  .tbtn.on{background:var(--brass);border-color:var(--brass);color:#161206;font-weight:600}
+  .spacer{flex:1}
+  .hint{color:var(--ink-faint);font-size:12px;font-family:var(--mono)}
+
+  /* ---- compiled strip ---- */
+  #compiled{display:flex;align-items:center;gap:12px;padding:6px 16px;border-bottom:1px solid var(--line);background:var(--panel-2);flex:none;font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+  #compiled b{color:var(--ink)}
+  #compiled .tbtn{padding:4px 10px}
+
+  /* ---- inspector strip ---- */
+  #inspector{display:none;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--panel-2);flex:none;min-height:44px;overflow-x:auto;white-space:nowrap}
+  #inspector.show{display:flex}
+  .sel-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12.5px;padding:5px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel)}
+  .sel-chip .swatch{width:9px;height:9px;border-radius:2px}
+  .rel-counts{display:flex;gap:10px;font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)}
+  .rel-counts b{color:var(--ink)}
+  .conns{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
+  .conns .lbl{font-size:11px;color:var(--ink-faint);font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em}
+  .edge-chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;padding:3px 6px 3px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink-soft)}
+  .edge-chip .x{color:var(--ink-faint);border:none;background:none;padding:0 2px;font-size:13px;line-height:1}
+  .edge-chip .x:hover{color:var(--c-resource)}
+
+  /* ---- layout ---- */
+  main{flex:1;display:flex;flex-direction:column;min-height:0;gap:10px;padding:10px}
+  .region{display:grid;gap:10px;min-height:0}
+  .region.top{flex:1.15;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+    grid-template-areas:"group role" "user perm"}
+  .region.bottom{flex:.85;grid-template-columns:1fr 1fr;grid-template-rows:1fr;
+    grid-template-areas:"resource user2"}
+
+  /* ---- box ---- */
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .box[data-area=group]{grid-area:group;--accent:var(--c-group)}
+  .box[data-area=role]{grid-area:role;--accent:var(--c-role)}
+  .box[data-area=user]{grid-area:user;--accent:var(--c-user)}
+  .box[data-area=permission]{grid-area:perm;--accent:var(--c-perm)}
+  .box[data-area=resource]{grid-area:resource;--accent:var(--c-resource)}
+  .box[data-area=user2]{grid-area:user2;--accent:var(--c-user)}
+  .box-head{display:flex;align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid var(--line);flex:none}
+  .box-head .swatch{width:10px;height:10px;border-radius:3px;background:var(--accent);flex:none;box-shadow:0 0 10px -2px var(--accent)}
+  .box-head .title{font-family:var(--mono);font-weight:600;font-size:13px;letter-spacing:.02em}
+  .box-head .count{font-family:var(--mono);font-size:11px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);border-radius:20px;padding:1px 8px}
+  .box-head .add{margin-left:auto;background:transparent;border:1px solid var(--line);color:var(--ink-soft);width:24px;height:24px;border-radius:6px;font-size:15px;line-height:1;display:grid;place-items:center}
+  .box-head .add:hover{border-color:var(--accent);color:var(--accent)}
+  .filter{margin:8px 10px 6px;flex:none}
+  .filter input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--ink);padding:7px 10px;font-size:12.5px;font-family:var(--mono)}
+  .filter input::placeholder{color:var(--ink-faint)}
+  .filter input:focus{outline:none;border-color:var(--accent)}
+  .list{flex:1;overflow-y:auto;padding:2px 8px 10px}
+  .list::-webkit-scrollbar{width:9px}
+  .list::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
+
+  .item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;font-size:13px;color:var(--ink-soft);border:1px solid transparent;transition:background .12s,border-color .12s}
+  .item:hover{background:var(--panel-2);color:var(--ink)}
+  .item .name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .ext{flex:none;color:var(--ink-faint);font-family:var(--mono);font-size:11px}
+  .item .tick{width:7px;height:7px;border-radius:50%;background:var(--accent);opacity:0;flex:none}
+  .item.selected{background:color-mix(in srgb,var(--accent) 22%,transparent);border-color:var(--accent);color:var(--ink);font-weight:600}
+  .item.selected .tick{opacity:1}
+  .item.connect-first{border-color:var(--brass);box-shadow:0 0 0 1px var(--brass) inset}
+  .item .del{opacity:0;background:none;border:none;color:var(--ink-faint);font-size:14px;line-height:1;padding:0 3px}
+  .item:hover .del{opacity:1}
+  .item .del:hover{color:var(--c-resource)}
+  .item .depth{flex:none;color:var(--ink-faint);font-family:var(--mono);font-size:11px}
+  .empty{color:var(--ink-faint);font-size:12px;font-family:var(--mono);padding:14px 8px;text-align:center}
+  .connectable .item{cursor:crosshair}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>super_auth · graph editor</div>
+  <div class="tools">
+    <button class="tbtn" id="btn-connect">＋ Connect mode</button>
+    <button class="tbtn" id="btn-clear">Clear selection</button>
+    <button class="tbtn" id="btn-reload">↻ Reload</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="hint" id="hint">Click any record to trace its relationships across every box.</div>
+</header>
+
+<div id="compiled">
+  <span>Runtime access comes from the compiled authorizations table: <b id="compiled-count">…</b> rows. Edits here take effect after a recompile.</span>
+  <button class="tbtn" id="btn-compile">Recompile</button>
+</div>
+
+<div id="inspector"></div>
+
+<main>
+  <section class="region top">
+    <div class="box" data-area="group"      data-type="group"></div>
+    <div class="box" data-area="role"       data-type="role"></div>
+    <div class="box" data-area="user"       data-type="user"></div>
+    <div class="box" data-area="permission" data-type="permission"></div>
+  </section>
+  <section class="region bottom">
+    <div class="box" data-area="resource" data-type="resource"></div>
+    <div class="box" data-area="user2"     data-type="user"></div>
+  </section>
+</main>
+
+<script>
+// The app may be mounted under a prefix; every API call is relative to this page.
+const API = location.pathname.replace(/\/$/, "");
+const TITLES = {group:"Groups", role:"Roles", user:"Users", permission:"Permissions", resource:"Resources"};
+const NESTED = new Set(["group","role"]);
+
+let GRAPH = null;           // {groups,roles,users,permissions,resources,edges,authorizations_count}
+let selection = null;       // {type,id}
+let relevant = null;        // Set of "type:id" or null
+let connectMode = false;
+let connectFirst = null;    // {type,id}
+const boxFilters = {};      // area -> text
+
+const boxes = [...document.querySelectorAll(".box")];
+const byType = t => ({group:"groups",role:"roles",user:"users",permission:"permissions",resource:"resources"}[t]);
+const key = (t,id) => t+":"+id;
+
+// ---- data ----
+async function load(){
+  const r = await fetch(API + "/api/graph");
+  if(!r.ok){ setHint(`<span style="color:var(--c-resource)">could not load the graph (HTTP ${r.status})</span>`); return; }
+  GRAPH = await r.json();
+  document.getElementById("compiled-count").textContent = GRAPH.authorizations_count;
+  recompute();
+  render();
+}
+
+// ---- directional traversal ----
+// Authorization flows user → group → role → permission → resource. From the
+// selected node we collect everything DOWNSTREAM (what it can reach) and
+// everything UPSTREAM (what can reach it). So a user shows what they can access;
+// a resource shows who can access it. Group/role hierarchy is bidirectional
+// (a parent's grants apply to children, and a parent "contains" its children).
+const RANK = {user:0, group:1, role:2, permission:3, resource:4};
+
+function buildDirected(){
+  const fwd = new Map(); // toward resources
+  const bwd = new Map(); // toward users
+  const add = (m,a,b) => { if(!m.has(a)) m.set(a,new Set()); m.get(a).add(b); };
+  const dir = (a,b) => { add(fwd,a,b); add(bwd,b,a); }; // a is upstream of b
+  for(const e of GRAPH.edges){
+    const ends = [];
+    if(e.user_id) ends.push(["user",e.user_id]);
+    if(e.group_id) ends.push(["group",e.group_id]);
+    if(e.role_id) ends.push(["role",e.role_id]);
+    if(e.permission_id) ends.push(["permission",e.permission_id]);
+    if(e.resource_id) ends.push(["resource",e.resource_id]);
+    for(let i=0;i<ends.length;i++) for(let j=i+1;j<ends.length;j++){
+      const [ta,ia]=ends[i], [tb,ib]=ends[j];
+      const a=key(ta,ia), b=key(tb,ib);
+      if(RANK[ta] <= RANK[tb]) dir(a,b); else dir(b,a);
+    }
+  }
+  // Hierarchy — directional, so siblings never leak:
+  //  • Group grants flow DOWN to members of descendant groups, so a member
+  //    inherits ANCESTOR grants → a child group is upstream of its parent.
+  //  • Role grants flow to DESCENDANT roles, so holding a parent role includes
+  //    its children → a parent role is upstream of its child.
+  // (Selecting a child group therefore reaches its ancestors, never its siblings.)
+  for(const g of GRAPH.groups) if(g.parent_id) dir(key("group",g.id), key("group",g.parent_id));
+  for(const r of GRAPH.roles)  if(r.parent_id) dir(key("role",r.parent_id), key("role",r.id));
+  return {fwd,bwd};
+}
+
+function reach(map,start){
+  const seen=new Set([start]), q=[start];
+  while(q.length){ const c=q.shift(); for(const nb of (map.get(c)||[])) if(!seen.has(nb)){ seen.add(nb); q.push(nb); } }
+  return seen;
+}
+
+function recompute(){
+  if(!selection){ relevant = null; return; }
+  const {fwd,bwd} = buildDirected();
+  const start = key(selection.type, selection.id);
+  const down = reach(fwd,start);   // what it can reach
+  const up   = reach(bwd,start);   // what can reach it
+  const rel  = new Set([...down, ...up]);
+  // Also surface "peer" users — people whose own access overlaps this subgraph —
+  // so selecting a user reveals teammates, not just themselves. (Users are pure
+  // source nodes, so they'd never appear otherwise.)
+  for(const u of GRAPH.users){
+    const uk = key("user", u.id);
+    if(rel.has(uk)) continue;
+    for(const n of reach(fwd, uk)){ if(rel.has(n)){ rel.add(uk); break; } }
+  }
+  relevant = rel;
+}
+
+// depth for nested types (for indentation)
+function depthOf(type, node){
+  const list = GRAPH[byType(type)];
+  const map = new Map(list.map(n=>[n.id,n]));
+  let d=0, cur=node;
+  while(cur && cur.parent_id && map.has(cur.parent_id)){ d++; cur=map.get(cur.parent_id); if(d>20)break; }
+  return d;
+}
+
+// ---- rendering ----
+function render(){
+  for(const box of boxes){
+    const type = box.dataset.type;
+    const area = box.dataset.area;
+    let list = GRAPH[byType(type)] || [];
+
+    // graph-traversal relevance filter (from selection)
+    if(relevant) list = list.filter(n => relevant.has(key(type,n.id)));
+    // per-box text filter
+    const f = (boxFilters[area]||"").toLowerCase();
+    let shown = f ? list.filter(n => (n.name||"").toLowerCase().includes(f)) : list;
+
+    const total = GRAPH[byType(type)].length;
+    const countTxt = (relevant || f) ? `${shown.length}/${total}` : `${total}`;
+
+    let items = shown.map(n => {
+      const isSel = selection && selection.type===type && selection.id===n.id;
+      const isCF = connectFirst && connectFirst.type===type && connectFirst.id===n.id;
+      const depth = NESTED.has(type) ? depthOf(type,n) : 0;
+      const pad = depth ? `style="padding-left:${8+depth*14}px"` : "";
+      const arrow = depth ? `<span class="depth">${"└".padStart(1)} </span>` : "";
+      const name = n.name ?? "";
+      const ext = n.external_type ? `<span class="ext" title="external record">${escapeHtml(n.external_type)}#${escapeHtml(n.external_id ?? "*")}</span>` : "";
+      return `<div class="item ${isSel?'selected':''} ${isCF?'connect-first':''}" data-id="${n.id}" ${pad}>
+        <span class="tick"></span>
+        ${arrow}<span class="name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${ext}
+        <button class="del" data-del="${n.id}" title="Delete">✕</button>
+      </div>`;
+    }).join("");
+    if(!shown.length) items = `<div class="empty">${relevant ? "no related "+TITLES[type].toLowerCase() : "empty"}</div>`;
+
+    box.innerHTML = `
+      <div class="box-head">
+        <span class="swatch"></span>
+        <span class="title">${TITLES[type]}</span>
+        <span class="count">${countTxt}</span>
+        <button class="add" title="Add ${TITLES[type]}">+</button>
+      </div>
+      <div class="filter"><input type="text" placeholder="filter ${TITLES[type].toLowerCase()}…" value="${escapeHtml(boxFilters[area]||'')}"></div>
+      <div class="list ${connectMode?'connectable':''}">${items}</div>`;
+
+    // wire events
+    const input = box.querySelector(".filter input");
+    input.addEventListener("input", e => { boxFilters[area]=e.target.value; render(); reFocus(box); });
+    box.querySelector(".add").addEventListener("click", () => addNode(type));
+    box.querySelectorAll(".item").forEach(el=>{
+      el.addEventListener("click", ev=>{
+        if(ev.target.closest(".del")) return;
+        onItemClick(type, +el.dataset.id);
+      });
+    });
+    box.querySelectorAll(".del").forEach(el=>{
+      el.addEventListener("click", ()=> deleteNode(type, +el.dataset.del));
+    });
+  }
+  renderInspector();
+}
+
+let focusArea=null;
+function reFocus(box){ // keep caret in the filter after re-render
+  const area=box.dataset.area;
+  const input=document.querySelector(`.box[data-area="${area}"] .filter input`);
+  if(input){ input.focus(); const v=input.value; input.setSelectionRange(v.length,v.length); }
+}
+
+function renderInspector(){
+  const ins = document.getElementById("inspector");
+  if(!selection){ ins.classList.remove("show"); ins.innerHTML=""; return; }
+  ins.classList.add("show");
+  const node = GRAPH[byType(selection.type)].find(n=>n.id===selection.id);
+  if(!node){ ins.classList.remove("show"); return; }
+  const color = {group:"var(--c-group)",role:"var(--c-role)",user:"var(--c-user)",permission:"var(--c-perm)",resource:"var(--c-resource)"}[selection.type];
+
+  // relevance counts per type (excluding the selected type's self)
+  const counts = ["group","role","user","permission","resource"].map(t=>{
+    const n = GRAPH[byType(t)].filter(x=>relevant.has(key(t,x.id)) && !(t===selection.type && x.id===selection.id)).length;
+    return `<span><b>${n}</b> ${TITLES[t].toLowerCase()}</span>`;
+  }).join("");
+
+  // direct edges of the selected node (editable)
+  const col = {user:"user_id",group:"group_id",role:"role_id",permission:"permission_id",resource:"resource_id"}[selection.type];
+  const direct = GRAPH.edges.filter(e=>e[col]===selection.id);
+  const edgeChips = direct.map(e=>{
+    const other = ["user","group","role","permission","resource"].filter(t=>{
+      const c={user:"user_id",group:"group_id",role:"role_id",permission:"permission_id",resource:"resource_id"}[t];
+      return e[c] && !(t===selection.type && e[c]===selection.id);
+    }).map(t=>{
+      const c={user:"user_id",group:"group_id",role:"role_id",permission:"permission_id",resource:"resource_id"}[t];
+      return `${escapeHtml(nameFor(t,e[c]))} <span style="color:var(--ink-faint)">(${t})</span>`;
+    }).join(", ");
+    return `<span class="edge-chip">→ ${other||"—"} <button class="x" data-edge="${e.id}" title="Delete edge">✕</button></span>`;
+  }).join("");
+
+  ins.innerHTML = `
+    <span class="sel-chip"><span class="swatch" style="background:${color}"></span>${escapeHtml(node.name ?? "")}
+      <span style="color:var(--ink-faint)">${selection.type}</span></span>
+    <span class="rel-counts">${counts}</span>
+    <span class="conns"><span class="lbl">edges:</span>${edgeChips||'<span style="color:var(--ink-faint);font-family:var(--mono);font-size:11px">none</span>'}</span>`;
+  ins.querySelectorAll("[data-edge]").forEach(b=> b.addEventListener("click", ()=> deleteEdge(+b.dataset.edge)));
+}
+
+// ---- interactions ----
+function onItemClick(type,id){
+  if(connectMode){
+    if(!connectFirst){ connectFirst={type,id}; setHint(`Connecting from <b>${escapeHtml(nameFor(type,id))}</b> — pick a second record.`); render(); return; }
+    if(connectFirst.type===type && connectFirst.id===id){ connectFirst=null; setHint("Connect mode: pick the first record."); render(); return; }
+    createEdge(connectFirst, {type,id});
+    return;
+  }
+  if(selection && selection.type===type && selection.id===id){ selection=null; } // toggle off
+  else { selection={type,id}; }
+  recompute(); render();
+}
+
+async function createEdge(a,b){
+  const res = await fetch(API + "/api/edges",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({a_type:a.type,a_id:a.id,b_type:b.type,b_id:b.id})});
+  const j = await res.json();
+  connectFirst=null;
+  if(!res.ok){ setHint(`<span style="color:var(--c-resource)">${escapeHtml(j.error||"could not connect")}</span>`); }
+  else setHint(`Connected <b>${escapeHtml(nameFor(a.type,a.id))}</b> → <b>${escapeHtml(nameFor(b.type,b.id))}</b>. Recompile to apply.`);
+  await load();
+}
+
+async function deleteEdge(id){
+  const res = await fetch(API + "/api/edges/"+id,{method:"DELETE"});
+  if(!res.ok){ alert(await errorText(res)); }
+  await load();
+}
+
+async function addNode(type){
+  const name = prompt(`New ${type} name:`);
+  if(!name) return;
+  let parent_id = null;
+  if(NESTED.has(type)){
+    const p = prompt(`Parent ${type} name (optional — leave blank for top level):`);
+    if(p){ const match = GRAPH[byType(type)].find(n=>(n.name||"").toLowerCase()===p.trim().toLowerCase());
+      if(match) parent_id=match.id; else { alert(`No ${type} named "${p}" — creating at top level.`); } }
+  }
+  const res = await fetch(API + "/api/nodes/"+type,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name,parent_id})});
+  if(!res.ok){ alert(await errorText(res)); return; }
+  await load();
+}
+
+async function deleteNode(type,id){
+  if(!confirm(`Delete this ${type}? Its edges will be removed too, and any children become top-level.`)) return;
+  const res = await fetch(API + `/api/nodes/${type}/${id}`,{method:"DELETE"});
+  if(!res.ok){ alert(await errorText(res)); }
+  if(selection && selection.type===type && selection.id===id) selection=null;
+  await load();
+}
+
+async function compile(){
+  const btn = document.getElementById("btn-compile");
+  btn.disabled = true;
+  try{
+    const res = await fetch(API + "/api/compile",{method:"POST"});
+    if(!res.ok){ alert(await errorText(res)); return; }
+    const j = await res.json();
+    setHint(`Compiled <b>${j.count}</b> authorization rows.`);
+  } finally { btn.disabled = false; }
+  await load();
+}
+
+// ---- toolbar ----
+document.getElementById("btn-connect").addEventListener("click", ()=>{
+  connectMode=!connectMode; connectFirst=null;
+  document.getElementById("btn-connect").classList.toggle("on",connectMode);
+  setHint(connectMode ? "Connect mode: click two records to draw an edge between them." : "Click any record to trace its relationships.");
+  render();
+});
+document.getElementById("btn-clear").addEventListener("click", ()=>{
+  selection=null; connectFirst=null; recompute(); render();
+});
+document.getElementById("btn-reload").addEventListener("click", load);
+document.getElementById("btn-compile").addEventListener("click", compile);
+
+// ---- utils ----
+function nameFor(t,id){ const x=GRAPH[byType(t)].find(n=>n.id===id); return x?(x.name ?? "#"+id):("#"+id); }
+function setHint(html){ document.getElementById("hint").innerHTML=html; }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+async function errorText(res){ try{ const j=await res.json(); return j.error||("HTTP "+res.status); }catch(e){ return "HTTP "+res.status; } }
+
+load();
+</script>
+</body>
+</html>

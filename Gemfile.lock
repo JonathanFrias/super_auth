@@ -54,6 +54,9 @@ GEM
       coderay (~> 1.1)
       method_source (~> 1.0)
       reline (>= 0.6.0)
+    rack (3.2.7)
+    rackup (2.3.1)
+      rack (>= 3)
     rake (13.3.1)
     reline (0.6.3)
       io-console (~> 0.5)
@@ -82,6 +85,7 @@ GEM
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
     uri (1.1.1)
+    webrick (1.9.2)
     zeitwerk (2.7.5)
 
 PLATFORMS
@@ -96,12 +100,15 @@ DEPENDENCIES
   mysql2
   pg
   pry
+  rack
+  rackup
   rake (~> 13.0)
   rspec (~> 3.0)
   sequel
   sequel-activerecord_connection
   sqlite3
   super_auth!
+  webrick
   zeitwerk (~> 2.6)
 
 BUNDLED WITH

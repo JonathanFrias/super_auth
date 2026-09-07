@@ -25,6 +25,47 @@ suite against each of the three. Row-level security is Postgres only.
 How `super_auth` stacks up against other authentication strategies:
 [Do you really understand Authorization](https://dev.to/jonathanfrias/do-you-really-understand-authorization-1o5d)
 
+## Graph editor
+
+A Rails-free editor for the authorization graph: five boxes (groups, roles, users,
+permissions, resources); click any record to trace what it can reach and what reaches
+it; connect two records to draw an edge; delete records and edges; recompile. It ships
+in the gem as a Rack app and a command.
+
+```bash
+gem install super_auth rackup webrick        # any Rack server works; puma too
+SUPER_AUTH_DATABASE_URL=postgres://user:password@localhost/app_development super_auth-editor
+```
+
+Then open http://127.0.0.1:4666. Options: `--host` (default `127.0.0.1`), `--port`
+(default `4666`), `--migrate` (run the gem's Sequel migrations first, for a database that
+has none), `--seed` (replace the whole graph with a sample company, destructive).
+
+> ⚠️ **The editor has no authentication.** Anyone who can reach it can rewrite the graph.
+> The command binds to loopback and rejects requests whose `Host` header is not
+> localhost. When you mount the app in your own server, put your own authentication in
+> front of it, as below.
+
+Mount it in any Rack app:
+
+```ruby
+# config.ru
+SuperAuth.db = Sequel.connect(ENV.fetch("SUPER_AUTH_DATABASE_URL"))
+SuperAuth.load
+map "/super_auth/editor" do
+  use Rack::Auth::Basic { |user, password| user == "admin" && password == ENV.fetch("EDITOR_PASSWORD") }
+  run SuperAuth::Editor
+end
+```
+
+Edits change the graph, not runtime access: `ByCurrentUser` and the row-level security
+policies read the compiled `super_auth_authorizations` table. The strip at the top shows
+that table's row count, and **Recompile** runs `SuperAuth::Authorization.compile!`
+(`POST /api/compile`). The API is small and JSON: `GET /api/graph`,
+`POST /api/nodes/:type`, `DELETE /api/nodes/:type/:id`, `POST /api/edges`,
+`DELETE /api/edges/:id`, `POST /api/compile`. Writes must be `application/json`, and
+the editor only creates edges of the eight kinds the path strategies read.
+
 ## Graph Visualization
 
 SuperAuth includes an interactive graph visualization tool to help you understand and debug your authorization rules!

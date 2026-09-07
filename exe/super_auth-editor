@@ -1,0 +1,9 @@
+#!/usr/bin/env ruby
+# Serves the super_auth graph editor on loopback. See `super_auth-editor --help`.
+require "super_auth/editor/cli"
+
+begin
+  SuperAuth::Editor::CLI.run(ARGV)
+rescue SuperAuth::Error => e
+  abort "super_auth-editor: #{e.message}"
+end
