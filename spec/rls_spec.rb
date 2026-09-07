@@ -420,6 +420,7 @@ RSpec.describe SuperAuth::RLS do
     end
 
     describe "both identities" do
+      before { SuperAuth.current_user = nil } # other spec files leave a user behind
       after { SuperAuth.current_user = nil }
 
       it "sets SuperAuth.current_user for the block and restores the previous value after it" do
@@ -438,6 +439,20 @@ RSpec.describe SuperAuth::RLS do
         expect(inside.id).to eq(42)
         expect(names).to eq(["doc1"])
         expect(SuperAuth.current_user).to equal(outer)
+      end
+
+      it "assigns SuperAuth.current_user inside the transaction, after the database identity" do
+        user = SuperAuthRlsSpecUser.new(42)
+        grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+        seen = nil
+        allow(SuperAuth).to receive(:current_user=).and_wrap_original do |writer, value|
+          seen = [db.in_transaction?, doc_names] if value.equal?(user)
+          writer.call(value)
+        end
+
+        as_restricted_role { SuperAuth.as(user) {} }
+
+        expect(seen).to eq([true, ["doc1"]])
       end
 
       it "restores both after the block raises" do
@@ -565,20 +580,7 @@ RSpec.describe SuperAuth::RLS do
           expect(all_doc_names).to eq(["doc1", "doc2", "doc3", "doc4"])
         end
 
-        it "commits what the block wrote before it raised with on_error: :commit, then re-raises" do
-          expect {
-            as_restricted_role do
-              SuperAuth.as(user, on_error: :commit) do
-                db[:documents].insert(name: "doc3")
-                raise "after the write"
-              end
-            end
-          }.to raise_error(RuntimeError, "after the write")
-          expect(all_doc_names).to eq(["doc1", "doc2", "doc3"])
-          expect(SuperAuth.current_user).to be_nil
-        end
-
-        it "rolls back what the block wrote before it raised by default" do
+        it "rolls back what the block wrote before it raised" do
           expect {
             as_restricted_role do
               SuperAuth.as(user) do
@@ -590,18 +592,18 @@ RSpec.describe SuperAuth::RLS do
           expect(all_doc_names).to eq(["doc1", "doc2"])
         end
 
-        it "still rolls back on Sequel::Rollback with on_error: :commit" do
+        it "leaves keeping a write that preceded a raise to the caller: rescue inside the block" do
+          error = nil
           as_restricted_role do
-            SuperAuth.as(user, on_error: :commit) do
+            SuperAuth.as(user) do
               db[:documents].insert(name: "doc3")
-              raise Sequel::Rollback
+              raise "after the write"
+            rescue RuntimeError => e
+              error = e
             end
           end
-          expect(all_doc_names).to eq(["doc1", "doc2"])
-        end
-
-        it "rejects an unknown on_error before touching the database" do
-          expect { SuperAuth.as(user, on_error: :ignore) {} }.to raise_error(ArgumentError, /on_error/)
+          expect(error.message).to eq("after the write")
+          expect(all_doc_names).to eq(["doc1", "doc2", "doc3"])
         end
       end
 
@@ -622,6 +624,83 @@ RSpec.describe SuperAuth::RLS do
 
         expect(all_doc_names).to eq(["doc1", "doc2", "doc3"])
       end
+    end
+  end
+
+  describe ".assert" do
+    let(:user) { SuperAuthRlsSpecUser.new(42) }
+
+    before { grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id) }
+
+    it "asserts the identity for the rest of the caller's transaction" do
+      names = as_restricted_role do
+        db.transaction do
+          described_class.assert(user)
+          doc_names
+        end
+      end
+      expect(names).to eq(["doc1"])
+      expect(doc_names).to eq([])
+    end
+
+    it "protects nothing outside a transaction: the identity dies with its statement" do
+      as_restricted_role { described_class.assert(user) }
+      expect(doc_names).to eq([])
+    end
+
+    it "re-asserts mid-transaction, replacing the identity SuperAuth.as put there" do
+      grant(user_external_id: 43, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc2_id)
+      names = as_restricted_role do
+        SuperAuth.as(user) do
+          described_class.assert(SuperAuthRlsSpecUser.new(43))
+          doc_names
+        end
+      end
+      expect(names).to eq(["doc2"])
+    end
+
+    it "matches internal SuperAuth users on user_id" do
+      internal = SuperAuth::User.create(name: "internal")
+      grant(user_id: internal.id, resource_external_id: doc2_id)
+      names = as_restricted_role do
+        db.transaction do
+          described_class.assert(internal)
+          doc_names
+        end
+      end
+      expect(names).to eq(["doc2"])
+    end
+
+    it "asserts system context for a system user" do
+      names = as_restricted_role(:super_auth_rls_spec_system) do
+        db.transaction do
+          described_class.assert(SuperAuthRlsSpecSystemUser.new(1))
+          doc_names
+        end
+      end
+      expect(names).to eq(["doc1", "doc2"])
+    end
+
+    it "fails for a system user when the role was not granted super_auth_system()" do
+      expect {
+        as_restricted_role { db.transaction { described_class.assert(SuperAuthRlsSpecSystemUser.new(1)) } }
+      }.to raise_error(Sequel::DatabaseError, /permission denied for function super_auth_system/)
+    end
+  end
+
+  describe ".installed?" do
+    it "is true once enable has run" do
+      expect(described_class.installed?).to be(true)
+    end
+
+    it "is false on a database that never ran enable" do
+      db.run "DROP FUNCTION super_auth_become(text, text, text)"
+      db.run "DROP FUNCTION super_auth_system()"
+      expect(described_class.installed?).to be(false)
+    end
+
+    it "is false on a non-Postgres database" do
+      expect(described_class.installed?(db: Sequel.sqlite)).to be(false)
     end
   end
 

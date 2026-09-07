@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Added
+
+- `SuperAuth::RLS.assert(user)` asserts the database identity in the transaction the caller already holds and opens nothing: the `SELECT super_auth_become(...)` half of the SQL contract, or `super_auth_system()` for a system user. For code that changes user mid-transaction or manages its own transaction; `SuperAuth.as` is now this plus a transaction plus restore.
+- `SuperAuth::RLS.installed?` reports whether `enable` has run on the database, so an application that degrades when RLS is absent no longer probes for the SQL functions by signature. A probe written against one signature returns false when the signature changes and turns row-level security off with a green suite, which is what a 0.4.0 probe does against 0.5.0.
+
+### Changed
+
+- `SuperAuth.as` assigns `SuperAuth.current_user` inside the transaction, after the database identity is asserted, so an application that hooks the writer to re-assert does so on the transaction's connection instead of once outside it and once in.
+
+### Removed
+
+- `on_error:` on `SuperAuth.as` and `SuperAuth::RLS.as`, added in 0.5.0. Whether a write survives the block raising is the caller's decision, not the identity wrapper's: rescue inside the block to keep it, let the exception out to roll it back. `as` has one control-flow path again.
+
 ## [0.5.0] - 2026-09-07
 
 ### Security
@@ -21,7 +34,7 @@
 
 ### Changed
 
-- `SuperAuth.as(user)` now carries both identities: it sets `SuperAuth.current_user` (read by the `ByCurrentUser` scope) for the block as well as asserting the database identity (read by the RLS policies), and restores both on the way out, on return, on raise, and when nested. `SuperAuth::RLS.as` stays the pure SQL-contract wrapper and now restores the enclosing database identity when it is nested inside a transaction, so an inner block can no longer leave the outer one running as its user. Inside a transaction the caller opened, `as` joins it. Two options replace the wrapper an application used to need: `auto_savepoint: true` makes every nested transaction a savepoint (the ActiveRecord bridge turns it into `joinable: false`), so a save inside the block commits on its own and its `after_commit` hooks fire then; `on_error: :commit` commits what the block wrote before it raised and then re-raises (the default rolls back; `Sequel::Rollback` always rolls back). Other keyword options pass through to Sequel's `transaction`. Behaviour change: `SuperAuth.as(nil)` runs the block with `current_user = nil`, so apps with `missing_user_behavior = :raise` now raise on scoped queries inside an anonymous block instead of inheriting whatever the thread-local held before. Clients that probe for the identity function must look for `super_auth_become(text, text, text)`; the four-argument signature is gone (see Security above).
+- `SuperAuth.as(user)` now carries both identities: it sets `SuperAuth.current_user` (read by the `ByCurrentUser` scope) for the block as well as asserting the database identity (read by the RLS policies), and restores both on the way out, on return, on raise, and when nested. `SuperAuth::RLS.as` stays the pure SQL-contract wrapper and now restores the enclosing database identity when it is nested inside a transaction, so an inner block can no longer leave the outer one running as its user. Inside a transaction the caller opened, `as` joins it. One option replaces the wrapper an application used to need: `auto_savepoint: true` makes every nested transaction a savepoint (the ActiveRecord bridge turns it into `joinable: false`), so a save inside the block commits on its own and its `after_commit` hooks fire then. Other keyword options pass through to Sequel's `transaction`. Behaviour change: `SuperAuth.as(nil)` runs the block with `current_user = nil`, so apps with `missing_user_behavior = :raise` now raise on scoped queries inside an anonymous block instead of inheriting whatever the thread-local held before. Clients that probe for the identity function must look for `super_auth_become(text, text, text)`; the four-argument signature is gone (see Security above).
 - `SuperAuth::RLS.enable` grants `SELECT` on `super_auth_authorizations` and `super_auth_users` to `PUBLIC`, so a runtime role needs privileges on the application's tables and nothing else; `SuperAuth::RLS.grant_system(role)` hands out the bypass without hand-written SQL. `system?` on both user models is now a read-only lookup (`.system` still creates the row), so passing SuperAuth user records to `SuperAuth.as` never needs `INSERT`.
 
 ## [0.4.0] - 2026-09-02

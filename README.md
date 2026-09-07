@@ -206,11 +206,15 @@ end
 `ByCurrentUser` scope and the policies agree, and restores both on the way out, nested
 calls included. It opens a transaction and calls `super_auth_become` for you, or joins
 the transaction you are already in — use it in an `around_action` (or around a job) to
-cover a whole request. Two options cover what a request or job wrapper usually needs:
-`auto_savepoint: true` makes every nested transaction a savepoint (ActiveRecord's
-`joinable: false`), so each save inside commits on its own and its `after_commit`
-hooks fire then; `on_error: :commit` keeps what the block wrote before it raised, then
-re-raises. Non-Ruby apps use the SQL contract directly. Each policy checks `super_auth_authorizations` with the same
+cover a whole request. `auto_savepoint: true` makes every nested transaction a
+savepoint (ActiveRecord's `joinable: false`), so each save inside commits on its own
+and its `after_commit` hooks fire then; other keyword options pass through to Sequel's
+`transaction`. Whether a write survives the block raising is up to you: rescue inside
+the block to keep it. Where there is no block to wrap, a transaction you already
+manage or a change of user mid-request, `SuperAuth::RLS.assert(user)` asserts the
+identity in the current transaction and nothing else, and `SuperAuth::RLS.installed?`
+reports whether `enable` has run, so no application needs to know the SQL functions'
+signatures. Non-Ruby apps use the SQL contract directly. Each policy checks `super_auth_authorizations` with the same
 semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
 act as a wildcard, per-record authorizations match on id. Any object with an `id`
 works as the user, including SuperAuth's own user records. For a user whose `system?`

@@ -100,12 +100,16 @@ module SuperAuth
   # (see SuperAuth::RLS.as). Both are restored on the way out, whether the
   # block returns, raises, or was nested inside another `as`. Passing nil runs
   # the block with no user in either layer. Postgres only, since the database
-  # half is; on other databases it raises before touching anything. Keyword
-  # options (auto_savepoint:, on_error:, ...) go to SuperAuth::RLS.as.
-  def self.as(user, db: SuperAuth.db, **options, &block)
+  # half is. Keyword options (auto_savepoint:, ...) go to SuperAuth::RLS.as.
+  # current_user is assigned inside the transaction, after the database
+  # identity, so an application that hooks the writer to re-assert does so on
+  # the connection that holds the transaction.
+  def self.as(user, db: SuperAuth.db, **options)
     previous = current_user
-    self.current_user = user
-    SuperAuth::RLS.as(user, db: db, **options, &block)
+    SuperAuth::RLS.as(user, db: db, **options) do
+      self.current_user = user
+      yield
+    end
   ensure
     self.current_user = previous
   end

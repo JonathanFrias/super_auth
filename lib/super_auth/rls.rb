@@ -96,54 +96,53 @@ module SuperAuth
       # This touches only the database settings; SuperAuth.as is the call that
       # also sets SuperAuth.current_user.
       #
-      # Transaction options pass through to Sequel's transaction. Two matter
+      # Transaction options pass through to Sequel's transaction. One matters
       # for a wrapper that exists only to carry an identity:
       #   auto_savepoint: true   every nested transaction becomes a savepoint
       #                          (the ActiveRecord bridge turns this into
       #                          joinable: false), so a save inside the block
       #                          commits on its own and its after_commit hooks
       #                          fire then, not at the end of the block.
-      #   on_error: :commit      commit what the block wrote before it raised,
-      #                          then re-raise; the default :rollback discards
-      #                          it. A Sequel::Rollback always rolls back.
-      def as(user, db: SuperAuth.db, on_error: :rollback, **transaction_options)
-        unless %i[rollback commit].include?(on_error)
-          raise ArgumentError, "on_error must be :rollback or :commit, got #{on_error.inspect}"
-        end
+      # Whether a write survives the block raising is the caller's policy, not
+      # this wrapper's: rescue inside the block to keep it, or let the
+      # exception out to roll it back.
+      def as(user, db: SuperAuth.db, **transaction_options)
         postgres!(db)
-        internal_id = external_id = external_type = nil
-        system = user.respond_to?(:system?) && !!user.system?
-        if user && SuperAuth.internal_user?(user)
-          internal_id = user.id.to_s
-        elsif user
-          external_id = user.id.to_s
-          external_type = user.class.name
-        end
         # Outside a transaction the settings die at COMMIT and there is nothing
         # to restore; inside one, the enclosing identity must survive the block.
         enclosing = db.in_transaction? ? identity(db) : nil
-        raised = nil
-        result = db.transaction(**transaction_options) do
-          if system
-            db.get(Sequel.function(:super_auth_system))
-          else
-            db.get(Sequel.function(:super_auth_become, external_id, external_type, internal_id))
-          end
+        db.transaction(**transaction_options) do
+          assert(user, db: db)
           begin
             yield
-          rescue Sequel::Rollback
-            raise
-          rescue StandardError => e
-            raise unless on_error == :commit
-            raised = e
-            nil
           ensure
             restore(enclosing, db) if enclosing
           end
         end
-        raise raised if raised
+      end
 
-        result
+      # Assert `user`'s identity in the transaction the caller already holds,
+      # without opening one: the SELECT super_auth_become(...) half of the
+      # contract, or super_auth_system() for a user whose `system?` is true.
+      # For re-asserting mid-transaction, and for code that manages its own
+      # transaction and only needs the identity in it. Outside a transaction
+      # the settings die with the statement, so it protects nothing there.
+      def assert(user, db: SuperAuth.db)
+        postgres!(db)
+        if user.respond_to?(:system?) && user.system?
+          db.get(Sequel.function(:super_auth_system))
+        else
+          db.get(Sequel.function(:super_auth_become, *become_args(user)))
+        end
+      end
+
+      # Whether `enable` has run on this database: both identity functions
+      # exist with their current signatures. One query per call, so a hot
+      # path memoises it. False on a non-Postgres database, where RLS cannot
+      # be installed.
+      def installed?(db: SuperAuth.db)
+        return false unless db.database_type == :postgres
+        db.get(Sequel.lit("to_regprocedure('super_auth_become(text,text,text)') IS NOT NULL AND to_regprocedure('super_auth_system()') IS NOT NULL"))
       end
 
       # Allow `role` to assert system context: SuperAuth.as with a user whose
@@ -214,6 +213,19 @@ module SuperAuth
         SQL
         # Bypass is opt-in per role: GRANT EXECUTE ON FUNCTION super_auth_system() TO <role>.
         db.run "REVOKE EXECUTE ON FUNCTION super_auth_system() FROM PUBLIC"
+      end
+
+      # super_auth_become's three arguments for `user`: a SuperAuth user
+      # record goes by user_id, any other object by id and class name, nil by
+      # nothing, an identity no authorization matches.
+      def become_args(user)
+        if user.nil?
+          [nil, nil, nil]
+        elsif SuperAuth.internal_user?(user)
+          [nil, nil, user.id.to_s]
+        else
+          [user.id.to_s, user.class.name, nil]
+        end
       end
 
       # The five transaction-local settings the policies read, in one order.
