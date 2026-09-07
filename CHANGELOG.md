@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-07
+
 ### Added
 
 - `SuperAuth::RLS.assert(user)` asserts the database identity in the transaction the caller already holds and opens nothing: the `SELECT super_auth_become(...)` half of the SQL contract, or `super_auth_system()` for a system user. For code that changes user mid-transaction or manages its own transaction; `SuperAuth.as` is now this plus a transaction plus restore.
