@@ -1,7 +1,7 @@
 require "spec_helper"
 
-# Findings from the September 2026 test audit, pinned as specs. Nothing here is
-# fixed yet. See spec/audit/graph_spec.rb for the pending/tripwire convention and
+# Findings from the September 2026 test audit, pinned as specs. See
+# spec/audit/graph_spec.rb for the pending/tripwire convention and
 # ~/.claude/plans/superauth-audit-fix-handoff.md for the full context (C1, C2,
 # ... match the tags in the titles).
 #
@@ -13,21 +13,35 @@ AuditRlsUser = Struct.new(:id)
 RSpec.describe "Audit: row-level security" do
   let(:db) { SuperAuth.db }
 
-  def as_restricted_role
-    db.run "SET ROLE super_auth_rls_spec"
+  # Same role plumbing as spec/rls_spec.rb: the test connection is a superuser,
+  # which RLS ignores and which the identity functions refuse, so everything
+  # under test runs as the application role. Nested calls keep the role; only
+  # the outermost call resets, which keeps RESET ROLE out of a transaction
+  # that a failing statement has already aborted.
+  def as_restricted_role(role = :super_auth_rls_spec)
+    @role_depth = (@role_depth || 0) + 1
+    db.run "SET ROLE #{role}" if @role_depth == 1
     yield
   ensure
-    db.run "RESET ROLE"
+    @role_depth -= 1
+    db.run "RESET ROLE" if @role_depth.zero?
   end
 
   def doc_names
     as_restricted_role { db[:documents].select_order_map(:name) }
   end
 
-  def become(user_external_id: nil, user_external_type: nil, user_id: nil, system: false)
-    db.transaction do
-      db.get(Sequel.function(:super_auth_become, user_external_id, user_external_type, user_id, system))
-      yield
+  # What the superuser test connection sees: everything.
+  def all_doc_names
+    db[:documents].select_order_map(:name)
+  end
+
+  def become(user_external_id: nil, user_external_type: nil, user_id: nil)
+    as_restricted_role do
+      db.transaction do
+        db.get(Sequel.function(:super_auth_become, user_external_id, user_external_type, user_id))
+        yield
+      end
     end
   end
 
@@ -53,10 +67,10 @@ RSpec.describe "Audit: row-level security" do
     SuperAuth.load
     SuperAuth.refresh_model_schemas
     db.run "CREATE TABLE documents (id serial PRIMARY KEY, name text)"
+    # Privileges on the application table only; enable grants the rest.
     db.run "DO $$ BEGIN CREATE ROLE super_auth_rls_spec; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
     db.run "GRANT SELECT, INSERT, UPDATE, DELETE ON documents TO super_auth_rls_spec"
     db.run "GRANT USAGE ON SEQUENCE documents_id_seq TO super_auth_rls_spec"
-    db.run "GRANT SELECT ON super_auth_authorizations TO super_auth_rls_spec"
     SuperAuth::RLS.enable(:documents, resource_type: "Document") unless example.metadata[:skip_enable]
 
     example.run
@@ -81,46 +95,48 @@ RSpec.describe "Audit: row-level security" do
       grant(user_external_id: 1, user_external_type: "AuditRlsUser", resource_external_id: doc1_id)
       grant(user_external_id: 2, user_external_type: "AuditRlsUser", resource_external_id: doc2_id)
 
-      names = SuperAuth.as(AuditRlsUser.new(1)) do
-        SuperAuth.as(AuditRlsUser.new(2)) {}
-        doc_names
+      names = as_restricted_role do
+        SuperAuth.as(AuditRlsUser.new(1)) do
+          SuperAuth.as(AuditRlsUser.new(2)) {}
+          doc_names
+        end
       end
       expect(names).to eq ["doc1"]
     end
   end
 
-  describe "C2: who may call super_auth_become" do
-    it "C2: a restricted role cannot assert system identity through super_auth_become" do
-      pending "C2: the function is executable by PUBLIC, so any role with EXECUTE can bypass every policy (spec/rls_spec.rb claims protection from a compromised client)"
+  describe "C2: who may assert system context" do
+    # Fixed 2026-09-06: the system bypass moved from a parameter of
+    # super_auth_become() to super_auth_system(), whose EXECUTE is revoked from
+    # PUBLIC by enable. spec/rls_spec.rb covers the grant path; this pins the
+    # deny path for a role that can assert user identities but was not granted
+    # the bypass.
+    it "C2: the application role cannot assert system context" do
       expect {
-        as_restricted_role { become(system: true) { db[:documents].delete } }
-      }.to raise_error(Sequel::DatabaseError, /permission denied/)
-      expect(become(system: true) { doc_names }).to eq ["doc1", "doc2"]
+        as_restricted_role { db.transaction { db.get(Sequel.function(:super_auth_system)) } }
+      }.to raise_error(Sequel::DatabaseError, /permission denied for function super_auth_system/)
+      expect(all_doc_names).to eq ["doc1", "doc2"]
     end
   end
 
   describe "C3: identity edge cases" do
     it "C3: SuperAuth.as(nil) sees nothing" do
       grant(user_external_id: 1, user_external_type: "AuditRlsUser")
-      expect(SuperAuth.as(nil) { doc_names }).to eq []
+      expect(as_restricted_role { SuperAuth.as(nil) { doc_names } }).to eq []
     end
 
     it "C3: SuperAuth.as with a SuperAuth::ActiveRecord::User matches on user_id" do
       user = SuperAuth::ActiveRecord::User.create!(name: "ar")
       grant(user_id: user.id, resource_external_id: doc2_id)
-      expect(SuperAuth.as(user) { doc_names }).to eq ["doc2"]
+      expect(as_restricted_role { SuperAuth.as(user) { doc_names } }).to eq ["doc2"]
     end
 
     it "C3: a per-record identity cannot INSERT" do
       grant(user_external_id: 1, user_external_type: "AuditRlsUser", resource_external_id: doc1_id)
-      # SET ROLE outside the transaction: RESET ROLE inside an aborted
-      # transaction would mask the policy error with "transaction is aborted".
       expect {
-        as_restricted_role do
-          become(user_external_id: "1", user_external_type: "AuditRlsUser") { db[:documents].insert(name: "doc3") }
-        end
+        become(user_external_id: "1", user_external_type: "AuditRlsUser") { db[:documents].insert(name: "doc3") }
       }.to raise_error(Sequel::DatabaseError, /row-level security/)
-      expect(become(system: true) { doc_names }).to eq ["doc1", "doc2"]
+      expect(all_doc_names).to eq ["doc1", "doc2"]
     end
   end
 

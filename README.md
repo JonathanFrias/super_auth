@@ -77,8 +77,24 @@ SELECT super_auth_become(user_external_id => '42', user_external_type => 'AppUse
 COMMIT;  -- identity dies with the transaction; there is nothing to clear
 ```
 
-For a user managed inside super_auth, pass `user_id => '7'` instead; `system => true`
-bypasses the policies (migrations, seeds, admin jobs).
+For a user managed inside super_auth, pass `user_id => '7'` instead.
+
+System context, which bypasses the policies (migrations, seeds, admin jobs), is a
+separate function, so the right to bypass is granted per role rather than coming with
+the right to assert an identity:
+
+```sql
+BEGIN;
+SELECT super_auth_system();
+-- every protected row is visible and writable --
+COMMIT;
+```
+
+`enable` revokes `EXECUTE` on `super_auth_system()` from `PUBLIC`; a role without an
+explicit grant (`SuperAuth::RLS.grant_system(role)`) gets `permission denied`. Both
+functions raise if the calling role is a superuser or has `BYPASSRLS`: Postgres exempts
+those roles from every policy, so the assertion would protect nothing while looking
+like it does.
 
 The assertion is anchored to the calling transaction: `super_auth_become` sets
 transaction-local identity settings plus a stamp of the current transaction id, and
@@ -121,15 +137,27 @@ class name when you use the AR integration).
 
 **3. Connect as a role RLS applies to.** Superusers and `BYPASSRLS` roles skip
 policies entirely, so the app must not connect as one (owning the tables is fine —
-the policies use `FORCE ROW LEVEL SECURITY`). The role needs `SELECT` on
-`super_auth_authorizations`, which the policies read; `EXECUTE` on
-`super_auth_become` is granted to `PUBLIC` by default, so no extra grant is needed:
+the policies use `FORCE ROW LEVEL SECURITY`); both identity functions refuse such a
+role outright. `enable` grants every role what it needs on the gem's own tables
+(`SELECT` on `super_auth_authorizations` and `super_auth_users`; `super_auth_become`
+is executable by `PUBLIC`), so a runtime role needs privileges on your tables and
+nothing else:
 
 ```sql
 CREATE ROLE app_runtime LOGIN PASSWORD '...';
 GRANT SELECT, INSERT, UPDATE, DELETE ON documents, invoices TO app_runtime;
-GRANT SELECT ON super_auth_authorizations TO app_runtime;
 ```
+
+The right to bypass the policies is separate. Grant it, from a migration or a
+console, only to the roles that run migrations, seeds and admin jobs:
+
+```ruby
+SuperAuth::RLS.grant_system(:app_admin)  # GRANT EXECUTE ON FUNCTION super_auth_system() TO app_admin
+```
+
+To keep the gem's tables readable only by specific roles instead, `REVOKE SELECT ON
+super_auth_authorizations, super_auth_users FROM PUBLIC` and grant per role; the
+policies run as the querying role, so it must keep that `SELECT`.
 
 > ⚠️ **This is the one step that, if skipped, silently disables all protection.**
 > PostgreSQL *always* lets **superusers** and roles with the **`BYPASSRLS`** attribute
@@ -138,8 +166,9 @@ GRANT SELECT ON super_auth_authorizations TO app_runtime;
 > Postgres as a superuser (the default in many local setups and some managed hosts), the
 > policies apply to nobody and every row stays visible, while everything *looks* like it
 > is working. Always connect as a dedicated non-superuser, non-`BYPASSRLS` role such as
-> `app_runtime` above. SuperAuth's language-specific clients check this on startup and
-> warn you when the connection is able to bypass RLS.
+> `app_runtime` above. `super_auth_become()` and `super_auth_system()` refuse to run for
+> such a role, so a misconfigured connection fails on its first identity assertion
+> instead of silently seeing everything.
 
 **4. Wrap work in an identity assertion.** In Ruby:
 
@@ -153,7 +182,10 @@ end
 an `around_action` (or around a job) to cover a whole request. Non-Ruby apps use the
 SQL contract directly. Each policy checks `super_auth_authorizations` with the same
 semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
-act as a wildcard, per-record authorizations match on id, `system?` users bypass.
+act as a wildcard, per-record authorizations match on id. Any object with an `id`
+works as the user, including SuperAuth's own user records. For a user whose `system?`
+is true, `SuperAuth.as` calls `super_auth_system()` instead, so the connection's role
+must have been given the bypass with `SuperAuth::RLS.grant_system`.
 
 ### Notes
 

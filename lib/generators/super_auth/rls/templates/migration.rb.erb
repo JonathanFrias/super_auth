@@ -3,6 +3,8 @@ class EnableSuperAuthRls < ActiveRecord::Migration[<%= ActiveRecord::Migration.c
 <% model_names.each do |model| -%>
     SuperAuth::RLS.enable(:<%= model.tableize.tr('/', '_') %>, resource_type: "<%= model.camelize %>")
 <% end -%>
+    # Roles allowed to bypass the policies (migrations, seeds, admin jobs):
+    # SuperAuth::RLS.grant_system(:app_admin)
   end
 
   def down
