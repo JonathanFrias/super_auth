@@ -1,7 +1,7 @@
 require "spec_helper"
 
-# Findings from the September 2026 test audit, pinned as specs. Nothing here is
-# fixed yet.
+# Findings from the September 2026 test audit, pinned as specs. Most are still
+# open; the A1 pairs examples passed once the pair CTEs recursed with UNION.
 #
 # - An example that starts with `pending "..."` documents a live defect: it runs,
 #   fails, and RSpec reports it as pending. When a fix lands the example passes,
@@ -25,6 +25,7 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
     db[:super_auth_permissions].delete
     db[:super_auth_roles].update(parent_id: nil)
     db[:super_auth_roles].delete
+    db[:super_auth_resources].update(parent_id: nil)
     db[:super_auth_resources].delete
   end
 
@@ -78,7 +79,6 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
     end
 
     it "A1: Group.ancestor_pairs terminates on a cyclic tree" do
-      pending "A1: UNION ALL recursion never terminates, so compile! hangs (introduced with ancestor_pairs in 0.4.0)"
       a = SuperAuth::Group.create(name: "a")
       b = SuperAuth::Group.create(name: "b", parent: a)
       db[:super_auth_groups].where(id: a.id).update(parent_id: b.id) # raw, bypassing any future model validation
@@ -88,13 +88,42 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
     end
 
     it "A1: Role.descendant_pairs terminates on a cyclic tree" do
-      pending "A1: UNION ALL recursion never terminates, so compile! hangs (introduced with descendant_pairs in 0.4.0)"
       a = SuperAuth::Role.create(name: "a")
       b = SuperAuth::Role.create(name: "b", parent: a)
       db[:super_auth_roles].where(id: a.id).update(parent_id: b.id)
 
       pairs = with_query_timeout(3) { SuperAuth::Role.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] } }
       expect(pairs).to include([a.id, a.id], [a.id, b.id], [b.id, a.id], [b.id, b.id])
+    end
+
+    # Resources nest since 0.8.0 and compile! joins their pairs, so a resource
+    # cycle must not hang a compile. The group and role path CTEs the
+    # strategies join are anchored on the roots and walk downward, so they
+    # never enter a cycle either: compile! returns, and every grant through a
+    # cyclic component compiles to no rows (pinned below). A write-time check
+    # against cycles — the pending A1 examples above — remains open.
+    it "A1: Resource.descendant_pairs terminates on a cyclic tree, and so does compile!" do
+      a = SuperAuth::Resource.create(name: "a")
+      b = SuperAuth::Resource.create(name: "b", parent: a)
+      db[:super_auth_resources].where(id: a.id).update(parent_id: b.id)
+      SuperAuth::Edge.create(user: SuperAuth::User.create(name: "u"), resource: a)
+
+      pairs = with_query_timeout(3) { SuperAuth::Resource.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] } }
+      expect(pairs).to include([a.id, a.id], [a.id, b.id], [b.id, a.id], [b.id, b.id])
+      expect(with_query_timeout(3) { SuperAuth::Authorization.compile! }).to eq 2
+    end
+
+    it "A1: a cyclic group compiles to no rows for the paths through it, instead of hanging" do
+      a = SuperAuth::Group.create(name: "a")
+      b = SuperAuth::Group.create(name: "b", parent: a)
+      db[:super_auth_groups].where(id: a.id).update(parent_id: b.id)
+      permission = SuperAuth::Permission.create(name: "read")
+      SuperAuth::Edge.create(user: SuperAuth::User.create(name: "u"), group: b)
+      SuperAuth::Edge.create(group: a, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: SuperAuth::Resource.create(name: "r"))
+
+      # Fail-closed: the cycle has no root, so the tree CTE never reaches it.
+      expect(with_query_timeout(3) { SuperAuth::Authorization.compile! }).to eq 0
     end
   end
 
@@ -175,6 +204,31 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
       gc = SuperAuth::Role.create(name: "gc", parent: c1)
 
       expect(c1.descendants_dataset.map(:id)).to match_array [c1.id, gc.id]
+    end
+
+    it "A3: (resources) a child's descendants exclude its parent and siblings" do
+      pending "A3: resources share the Nestable code path"
+      r1 = SuperAuth::Resource.create(name: "r1")
+      c1 = SuperAuth::Resource.create(name: "c1", parent: r1)
+      SuperAuth::Resource.create(name: "c2", parent: r1)
+      gc = SuperAuth::Resource.create(name: "gc", parent: c1)
+
+      expect(c1.descendants_dataset.map(:id)).to match_array [c1.id, gc.id]
+    end
+
+    # compile! walks resource subtrees through descendant_pairs, not through
+    # descendants_dataset, so the anchor defect above never reaches the
+    # compiled table. A tripwire for the relation compile! actually joins.
+    it "A3: (resources) a child's subtree through descendant_pairs excludes its parent and siblings" do
+      r1 = SuperAuth::Resource.create(name: "r1")
+      c1 = SuperAuth::Resource.create(name: "c1", parent: r1)
+      SuperAuth::Resource.create(name: "c2", parent: r1)
+      gc = SuperAuth::Resource.create(name: "gc", parent: c1)
+
+      under_c1 = SuperAuth::Resource.descendant_pairs.where(ancestor_id: c1.id).select_map(:descendant_id)
+      expect(under_c1).to match_array [c1.id, gc.id]
+      anchored = SuperAuth::Resource.descendant_pairs(of: [c1.id]).map { |r| [r[:ancestor_id], r[:descendant_id]] }
+      expect(anchored).to match_array [[c1.id, c1.id], [c1.id, gc.id]]
     end
   end
 

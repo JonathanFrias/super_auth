@@ -14,6 +14,7 @@ RSpec.describe "resource labels" do
     SuperAuth.install_migrations
     SuperAuth.load
     db[:super_auth_edges].delete
+    db[:super_auth_resources].update(parent_id: nil)
     db[:super_auth_resources].delete
     db.create_table?(:super_auth_label_spec_claims) do
       primary_key :id

@@ -38,6 +38,7 @@ RSpec.describe SuperAuth do
     SuperAuth::ActiveRecord::Permission.delete_all
     SuperAuth::ActiveRecord::Role.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Role.delete_all
+    SuperAuth::ActiveRecord::Resource.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Resource.delete_all
 
     # Create tables with database-appropriate auto-increment syntax
@@ -312,6 +313,74 @@ RSpec.describe SuperAuth do
       )
 
       expect(restart_class.all.map(&:id)).to eq([record.id])
+    end
+
+    # Containment is not inheritance: a compiled row copies the descendant
+    # node's own external_type, so a container can hold the base node and the
+    # capability node for one record and a single grant on it approves both.
+    it "approves a base node and a capability node held by one container with one grant" do
+      record = resource_class.create!(name: "server")
+      servers = SuperAuth::ActiveRecord::Resource.create!(name: "servers")
+      SuperAuth::ActiveRecord::Resource.create!(name: "server", external_id: record.id, external_type: "Resource", parent: servers)
+      SuperAuth::ActiveRecord::Resource.create!(name: "restartable", external_id: record.id, external_type: "ResourceRestartPermission", parent: servers)
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, resource: servers)
+      SuperAuth::ActiveRecord::Authorization.compile!
+
+      expect(resource_class.all.map(&:id)).to eq([record.id])
+      expect(restart_class.find(record.id).restart!).to eq("restarted")
+    end
+
+    # The hazard that follows: the tree does not know a capability node from
+    # any other child. Nested UNDER its base node, the capability node is
+    # reached by every grant on the base node, which is exactly the flow-down
+    # the subclass trick exists to prevent. Pinned as the documented rule
+    # (keep capability nodes beside their base node, never under it), not as
+    # desired behaviour.
+    it "reaches a capability node nested under its base node from a grant on the base node (documented hazard)" do
+      record = resource_class.create!(name: "server")
+      base = SuperAuth::ActiveRecord::Resource.create!(name: "server", external_id: record.id, external_type: "Resource")
+      SuperAuth::ActiveRecord::Resource.create!(name: "restartable", external_id: record.id, external_type: "ResourceRestartPermission", parent: base)
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, resource: base)
+      SuperAuth::ActiveRecord::Authorization.compile!
+
+      expect(restart_class.find(record.id).restart!).to eq("restarted")
+    end
+  end
+
+  context "container grants" do
+    # A node with neither external_type nor external_id is a container. A
+    # grant on it reaches every node under it, and each compiled row keeps
+    # that node's own type and id, so the scope sees exactly the records
+    # registered under the container.
+    before do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.create(name: "member")
+      resource_class.unscoped.delete_all
+    end
+
+    it "makes the records registered under the container visible" do
+      r1 = resource_class.create!(name: "r1")
+      r2 = resource_class.create!(name: "r2")
+      resource_class.create!(name: "r3") # never registered
+      folder = SuperAuth::ActiveRecord::Resource.create!(name: "folder")
+      [r1, r2].each do |record|
+        SuperAuth::ActiveRecord::Resource.create!(name: record.name, external_id: record.id, external_type: "Resource", parent: folder)
+      end
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, resource: folder)
+
+      expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq(3)
+      expect(resource_class.all.map(&:id)).to match_array([r1.id, r2.id])
+    end
+
+    # The container's own row has no external_type. Both branches of the
+    # scope key on that column, so the row is not a wildcard for anything.
+    it "grants nothing through the container's own row" do
+      resource_class.create!(name: "unregistered")
+      folder = SuperAuth::ActiveRecord::Resource.create!(name: "folder")
+      SuperAuth::ActiveRecord::Edge.create!(user: SuperAuth.current_user, resource: folder)
+
+      expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq(1)
+      expect(SuperAuth::ActiveRecord::Authorization.pluck(:resource_id, :resource_external_type, :resource_external_id)).to eq([[folder.id, nil, nil]])
+      expect(resource_class.all.to_a).to be_empty
     end
   end
 

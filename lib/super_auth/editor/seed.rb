@@ -15,6 +15,11 @@ module SuperAuth
     #     does not.
     #   - "Support Lead" is the PARENT role of "Support Agent": a lead inherits
     #     the agent's abilities plus refunds; an agent does not get refunds.
+    #   - "clusters" is a CONTAINER resource holding production_cluster and
+    #     staging_cluster. deploy is granted on the container and reaches both
+    #     clusters through the tree; restart_server and Morgan's direct grant
+    #     name production_cluster alone, so the tree shows a container grant
+    #     and a leaf grant side by side.
     #
     # Special people:
     #   - Riley (Auditor): read-only into BOTH Finance and Support
@@ -68,8 +73,9 @@ module SuperAuth
 
           # ===== RESOURCES (disjoint per department) =====
           source_repo        = res_m.create(name: "source_repo")
-          production_cluster = res_m.create(name: "production_cluster")
-          staging_cluster    = res_m.create(name: "staging_cluster")
+          clusters           = res_m.create(name: "clusters")                                   # container
+          production_cluster = res_m.create(name: "production_cluster", parent_id: clusters.id)
+          res_m.create(name: "staging_cluster", parent_id: clusters.id)  # reached only through clusters
           app_database       = res_m.create(name: "app_database")      # Backend
           marketing_site     = res_m.create(name: "marketing_site")    # Frontend
           general_ledger     = res_m.create(name: "general_ledger")
@@ -99,8 +105,8 @@ module SuperAuth
           edg.create(role_id: developer.id, permission_id: deploy.id)
           edg.create(permission_id: merge_code.id, resource_id: source_repo.id)
           edg.create(permission_id: read_repo.id,  resource_id: source_repo.id)
-          edg.create(permission_id: deploy.id,     resource_id: production_cluster.id)
-          edg.create(permission_id: deploy.id,     resource_id: staging_cluster.id)
+          # One grant on the container reaches both clusters.
+          edg.create(permission_id: deploy.id,     resource_id: clusters.id)
           # Child-group-specific grants (Alice gets one, Bob the other)
           edg.create(group_id: backend.id,  permission_id: run_migrations.id)
           edg.create(permission_id: run_migrations.id, resource_id: app_database.id)
@@ -153,7 +159,7 @@ module SuperAuth
       def clear!
         SuperAuth::Edge.dataset.delete
         SuperAuth::Authorization.dataset.delete
-        [SuperAuth::Group, SuperAuth::Role].each { |m| m.dataset.update(parent_id: nil) }
+        [SuperAuth::Group, SuperAuth::Role, SuperAuth::Resource].each { |m| m.dataset.update(parent_id: nil) }
         [SuperAuth::Group, SuperAuth::Role, SuperAuth::User, SuperAuth::Permission, SuperAuth::Resource].each do |m|
           m.dataset.delete
         end

@@ -20,6 +20,7 @@ RSpec.describe SuperAuth::Editor do
     db[:super_auth_permissions].delete
     db[:super_auth_roles].update(parent_id: nil)
     db[:super_auth_roles].delete
+    db[:super_auth_resources].update(parent_id: nil)
     db[:super_auth_resources].delete
   end
 
@@ -57,7 +58,9 @@ RSpec.describe SuperAuth::Editor do
   def group(name = "g", parent: nil) = SuperAuth::Group.create(name: name, parent: parent)
   def role(name = "r", parent: nil) = SuperAuth::Role.create(name: name, parent: parent)
   def permission(name = "p") = SuperAuth::Permission.create(name: name)
-  def resource(name = "res") = SuperAuth::Resource.create(name: name)
+  def resource(name = "res", parent: nil) = SuperAuth::Resource.create(name: name, parent: parent)
+  # The deprecated type-level shape: a type with no id, meaning every record of it.
+  def wildcard(name = "all docs") = SuperAuth::Resource.create(name: name, external_type: "Document")
 
   describe "mounting" do
     it "responds to call as the class and as an instance" do
@@ -94,6 +97,15 @@ RSpec.describe SuperAuth::Editor do
     it "calls the API relative to the page, never at the origin root" do
       expect(get("/").body).not_to match(%r{fetch\(["'`]/api})
       expect(get("/").body).to include('const API = location.pathname')
+    end
+
+    # The client indents, prompts for a parent and re-parents on delete by
+    # this set, and folds each tree into the traversal by these lines; the
+    # server's NESTED has to agree or resources would render flat.
+    it "treats resources as a tree, with a parent resource upstream of its children" do
+      html = get("/").body
+      expect(html).to include('const NESTED = new Set(["group","role","resource"])')
+      expect(html).to include('for(const r of GRAPH.resources) if(r.parent_id) dir(key("resource",r.parent_id), key("resource",r.id));')
     end
 
     it "escapes every node name and error message it interpolates into markup" do
@@ -170,7 +182,7 @@ RSpec.describe SuperAuth::Editor do
       expect(body["roles"].first.keys).to match_array %w[id name parent_id]
       expect(body["users"].first).to eq("id" => SuperAuth::User.first.id, "name" => "Bea", "external_id" => "7", "external_type" => "Account")
       expect(body["permissions"].first.keys).to match_array %w[id name]
-      expect(body["resources"].first.keys).to match_array %w[id name external_id external_type super_auth_label]
+      expect(body["resources"].first.keys).to match_array %w[id name parent_id external_id external_type super_auth_label]
       expect(body["edges"]).to eq [{
         "id" => e.id, "user_id" => SuperAuth::User.first.id, "group_id" => parent.id,
         "role_id" => nil, "permission_id" => nil, "resource_id" => nil,
@@ -207,6 +219,29 @@ RSpec.describe SuperAuth::Editor do
 
       names = parsed(get("/api/graph"))["roles"].map { |r| r["name"] }
       expect(names).to eq %w[Readers Writers Alpha Zed]
+    end
+
+    it "orders resources in tree order too" do
+      zed = resource("Zed")
+      resource("Zed2", parent: zed)
+      resource("Alpha", parent: zed)
+      resource("Readers")
+
+      names = parsed(get("/api/graph"))["resources"].map { |r| r["name"] }
+      expect(names).to eq %w[Readers Zed Alpha Zed2]
+    end
+
+    # Synced records share a name (one "Claim" per row), so the label is the
+    # only thing that can order them; a row without one sorts first.
+    it "orders same-named sibling resources by label" do
+      claims = resource("Claims")
+      SuperAuth::Resource.create(name: "Claim", external_type: "Claim", external_id: "1", super_auth_label: "Gulf War presumptive", parent: claims)
+      SuperAuth::Resource.create(name: "Claim", external_type: "Claim", external_id: "2", super_auth_label: "Agent Orange", parent: claims)
+      SuperAuth::Resource.create(name: "Claim", external_type: "Claim", external_id: "3", parent: claims)
+
+      rows = parsed(get("/api/graph"))["resources"]
+      expect(rows.map { |r| r["name"] }).to eq %w[Claims Claim Claim Claim]
+      expect(rows.map { |r| r["super_auth_label"] }).to eq [nil, nil, "Agent Orange", "Gulf War presumptive"]
     end
 
     # A dangling parent_id cannot be made through the API — the foreign key
@@ -252,6 +287,24 @@ RSpec.describe SuperAuth::Editor do
       expect(parsed(post_json("/api/nodes/group", { name: "child", parent_id: g.id }))["parent_id"]).to eq g.id
       expect(parsed(post_json("/api/nodes/role", { name: "child", parent_id: r.id.to_s }))["parent_id"]).to eq r.id
       expect(SuperAuth::Group.first(name: "child").parent_id).to eq g.id
+    end
+
+    it "nests a resource under a container" do
+      container = resource("clusters")
+      response = post_json("/api/nodes/resource", { name: "production", parent_id: container.id })
+      expect(response.status).to eq 201
+      expect(parsed(response)["parent_id"]).to eq container.id
+      expect(SuperAuth::Resource.first(name: "production").parent_id).to eq container.id
+    end
+
+    # "Wildcard nodes are flat": compile! would refuse the tree, so the
+    # editor refuses the shape up front and says why.
+    it "refuses a type-level (wildcard) resource as a parent" do
+      all_docs = wildcard
+      response = post_json("/api/nodes/resource", { name: "one doc", parent_id: all_docs.id })
+      expect(response.status).to eq 422
+      expect(parsed(response)["error"]).to include("type-level (wildcard)", "deprecated", "container")
+      expect(SuperAuth::Resource.count).to eq 1
     end
 
     it "rejects a parent that does not exist" do
@@ -342,6 +395,17 @@ RSpec.describe SuperAuth::Editor do
       expect(delete("/api/nodes/role/#{r.id}").status).to eq 200
       expect(SuperAuth::Role[r.id]).to be_nil
       expect(SuperAuth::Role[child.id].parent_id).to be_nil
+      expect(edges.count).to eq 0
+    end
+
+    it "deletes a container resource, and its children become roots" do
+      container = resource("clusters")
+      child = resource("production", parent: container)
+      SuperAuth::Edge.create(permission: permission, resource: container)
+
+      expect(delete("/api/nodes/resource/#{container.id}").status).to eq 200
+      expect(SuperAuth::Resource[container.id]).to be_nil
+      expect(SuperAuth::Resource[child.id].parent_id).to be_nil
       expect(edges.count).to eq 0
     end
 
@@ -478,6 +542,37 @@ RSpec.describe SuperAuth::Editor do
       expect(parsed(client.post("/api/compile"))).to eq("count" => 0)
       expect(db[:super_auth_authorizations].count).to eq 0
     end
+
+    it "compiles a grant on a container into a row per node under it" do
+      u = user("u")
+      container = resource("clusters")
+      resource("production", parent: container)
+      resource("staging", parent: container)
+      SuperAuth::Edge.create(user: u, resource: container)
+
+      expect(parsed(client.post("/api/compile"))).to eq("count" => 3)
+      expect(db[:super_auth_authorizations].select_order_map(:resource_name)).to eq %w[clusters production staging]
+    end
+
+    # The API refuses to create this shape, but a raw write can, and then the
+    # models refuse to compile it: the guard's own message reaches the
+    # client as a 422 rather than a 500, and the old rows stay.
+    it "reports the wildcard guard as a 422 and leaves the compiled table alone" do
+      silenced = SuperAuth.deprecator.silenced
+      SuperAuth.deprecator.silenced = true # the flat wildcard compiles, with a notice
+      u = user("u")
+      all_docs = wildcard
+      SuperAuth::Edge.create(user: u, resource: all_docs)
+      expect(parsed(client.post("/api/compile"))).to eq("count" => 1)
+
+      resource("one doc", parent: all_docs)
+      response = client.post("/api/compile")
+      expect(response.status).to eq 422
+      expect(parsed(response)["error"]).to include("Wildcard resource nodes must be flat", all_docs.id.to_s)
+      expect(db[:super_auth_authorizations].count).to eq 1
+    ensure
+      SuperAuth.deprecator.silenced = silenced
+    end
   end
 
   describe "unknown routes" do
@@ -502,7 +597,7 @@ RSpec.describe SuperAuth::Editor do
 
   describe SuperAuth::Editor::Seed do
     it "builds the documented Acme Cloud graph, idempotently, and leaves nothing compiled" do
-      expected = { groups: 5, roles: 5, users: 10, permissions: 12, resources: 9, edges: 42 }
+      expected = { groups: 5, roles: 5, users: 10, permissions: 12, resources: 10, edges: 41 }
       expect(described_class.run!).to eq expected
       expect(described_class.run!).to eq expected
       expect(db[:super_auth_authorizations].count).to eq 0
@@ -520,6 +615,11 @@ RSpec.describe SuperAuth::Editor do
       expect(access["Erin"]).to eq ["support_tickets"]
       expect(access["Riley"]).to eq %w[general_ledger support_tickets]
       expect(access["Morgan"]).to eq %w[general_ledger production_cluster support_tickets]
+      # deploy is granted on the "clusters" container: Sam reaches both
+      # clusters through it, and production_cluster again through
+      # restart_server, which names the leaf directly.
+      expect(access["Sam"]).to eq %w[clusters production_cluster staging_cluster]
+      expect(access["Bob"]).to include("staging_cluster")
     end
   end
 end

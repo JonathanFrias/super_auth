@@ -130,7 +130,7 @@
 // The app may be mounted under a prefix; every API call is relative to this page.
 const API = location.pathname.replace(/\/$/, "");
 const TITLES = {group:"Groups", role:"Roles", user:"Users", permission:"Permissions", resource:"Resources"};
-const NESTED = new Set(["group","role"]);
+const NESTED = new Set(["group","role","resource"]);
 
 let GRAPH = null;           // {groups,roles,users,permissions,resources,edges,authorizations_count}
 let selection = null;       // {type,id}
@@ -157,8 +157,8 @@ async function load(){
 // Authorization flows user → group → role → permission → resource. From the
 // selected node we collect everything DOWNSTREAM (what it can reach) and
 // everything UPSTREAM (what can reach it). So a user shows what they can access;
-// a resource shows who can access it. Group/role hierarchy is bidirectional
-// (a parent's grants apply to children, and a parent "contains" its children).
+// a resource shows who can access it. The group, role and resource trees are
+// each folded in as one more directed hop (see buildDirected).
 const RANK = {user:0, group:1, role:2, permission:3, resource:4};
 
 function buildDirected(){
@@ -184,9 +184,13 @@ function buildDirected(){
   //    inherits ANCESTOR grants → a child group is upstream of its parent.
   //  • Role grants flow to DESCENDANT roles, so holding a parent role includes
   //    its children → a parent role is upstream of its child.
+  //  • Resource grants reach DESCENDANT resources: a grant on a container
+  //    covers everything under it → a parent resource is upstream of its
+  //    children, the same direction as roles and the opposite of groups.
   // (Selecting a child group therefore reaches its ancestors, never its siblings.)
   for(const g of GRAPH.groups) if(g.parent_id) dir(key("group",g.id), key("group",g.parent_id));
   for(const r of GRAPH.roles)  if(r.parent_id) dir(key("role",r.parent_id), key("role",r.id));
+  for(const r of GRAPH.resources) if(r.parent_id) dir(key("resource",r.parent_id), key("resource",r.id));
   return {fwd,bwd};
 }
 
@@ -248,11 +252,16 @@ function render(){
       const name = n.name ?? "";
       // The external record occupies one slot: its label when the graph
       // stored one, otherwise the Type#id that used to be the only
-      // rendering. Either way the other half is the tooltip.
+      // rendering. Either way the other half is the tooltip. A type with no
+      // id is the deprecated type-level (wildcard) node — every record of
+      // the type — and its tooltip says so, since Type#* alone reads as a
+      // typo.
+      const wildcard = type === "resource" && !!n.external_type && n.external_id == null;
       const ref = n.external_type ? `${escapeHtml(n.external_type)}#${escapeHtml(n.external_id ?? "*")}` : "";
+      const kind = wildcard ? "type-level (deprecated)" : "external record";
       const ext = !ref ? "" : (n.super_auth_label
-        ? `<span class="ext" title="${ref}">${escapeHtml(n.super_auth_label)}</span>`
-        : `<span class="ext" title="external record">${ref}</span>`);
+        ? `<span class="ext" title="${wildcard ? `${ref} · ${kind}` : ref}">${escapeHtml(n.super_auth_label)}</span>`
+        : `<span class="ext" title="${kind}">${ref}</span>`);
       return `<div class="item ${isSel?'selected':''} ${isCF?'connect-first':''}" data-id="${n.id}" ${pad}>
         <span class="tick"></span>
         ${arrow}<span class="name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>${ext}

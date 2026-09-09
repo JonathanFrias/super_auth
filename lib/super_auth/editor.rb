@@ -3,7 +3,8 @@ require "super_auth"
 
 module SuperAuth
   # A small Rack application that edits the authorization graph: five boxes of
-  # records, client-side traversal, node and edge CRUD, and a Recompile button.
+  # records (groups, roles and resources drawn as trees), client-side
+  # traversal, node and edge CRUD, and a Recompile button.
   # Rails-free; it needs only SuperAuth.db to be connected and the tables to
   # exist. Mount it as `run SuperAuth::Editor` (Rack) or
   # `mount SuperAuth::Editor => "/super_auth/editor"` (Rails), or run
@@ -19,7 +20,9 @@ module SuperAuth
   #
   # Edits change the graph, not runtime access: ByCurrentUser and the RLS
   # policies read the compiled super_auth_authorizations table, so the UI
-  # shows its row count and offers POST /api/compile.
+  # shows its row count and offers POST /api/compile. A compile the models
+  # refuse (SuperAuth::Error, the wildcard guard) comes back as a 422 with
+  # the model's own message, like any other rejected write.
   class Editor
     TYPES = {
       "user" => :User, "group" => :Group, "role" => :Role,
@@ -29,7 +32,7 @@ module SuperAuth
       "user" => :user_id, "group" => :group_id, "role" => :role_id,
       "permission" => :permission_id, "resource" => :resource_id,
     }.freeze
-    NESTED = %w[group role].freeze
+    NESTED = %w[group role resource].freeze
     # The pairs the path strategies read (see Edge.authorizations), unordered.
     # The models also accept group->resource and role->resource rows, but no
     # strategy reads them, so they would grant nothing.
@@ -69,6 +72,8 @@ module SuperAuth
       end
 
       route(method, path, env)
+    rescue SuperAuth::Error => e
+      json(422, error: e.message)
     rescue Sequel::Error
       json(422, error: "the database rejected the change")
     end
@@ -103,7 +108,7 @@ module SuperAuth
         roles: nodes(:Role, :parent_id),
         users: nodes(:User, :external_id, :external_type),
         permissions: nodes(:Permission),
-        resources: nodes(:Resource, :external_id, :external_type, :super_auth_label),
+        resources: nodes(:Resource, :parent_id, :external_id, :external_type, :super_auth_label),
         edges: SuperAuth::Edge.order(:id).map { |e| edge_json(e) },
         authorizations_count: SuperAuth::Authorization.count,
       }
@@ -122,9 +127,12 @@ module SuperAuth
     # indentation, so a child has to arrive immediately after its parent or
     # it reads as nested under whatever happens to sort above it — which is
     # the one question an auditor opens this editor to answer. Sorting by the
-    # ancestors' [name, id] pairs, outermost first, puts every child under its
-    # own parent and leaves siblings alphabetical. Both node sets are small
-    # enough to order in Ruby, and the client's depthOf is unaffected.
+    # ancestors' [name, label, id] triples, outermost first, puts every child
+    # under its own parent and leaves siblings alphabetical; the label only
+    # separates same-named siblings, which synced resources are (one "Claim"
+    # per record), and is absent from groups and roles. All three node sets
+    # are small enough to order in Ruby, and the client's depthOf is
+    # unaffected.
     #
     # The key is total, so the order stays defined for broken trees: a row
     # whose parent_id names a missing row sorts as a root, and a parent cycle
@@ -137,7 +145,7 @@ module SuperAuth
         node = row
         while node && !seen[node[:id]]
           seen[node[:id]] = true
-          path.unshift([node[:name].to_s, node[:id]])
+          path.unshift([node[:name].to_s, node[:super_auth_label].to_s, node[:id]])
           node = by_id[node[:parent_id]]
         end
         path
@@ -158,7 +166,14 @@ module SuperAuth
       unless parent.nil?
         return json(422, error: "#{type} records cannot have a parent") unless NESTED.include?(type)
         return json(422, error: "parent_id must be an integer") unless integer_id?(parent)
-        return json(422, error: "parent not found") unless model[parent.to_i]
+        parent_node = model[parent.to_i]
+        return json(422, error: "parent not found") unless parent_node
+        # "Wildcard nodes are flat": compile! refuses a tree with a type-level
+        # node in it, so refuse the shape at the door with the reason instead.
+        if type == "resource" && parent_node.external_type && parent_node.external_id.nil?
+          return json(422, error: "type-level (wildcard) resources are deprecated and cannot contain other resources; " \
+                                  "make a container (a resource with no external type) instead")
+        end
         attrs[:parent_id] = parent.to_i
       end
 

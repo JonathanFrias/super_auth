@@ -53,24 +53,37 @@ module SuperAuth::Nestable
     # pairs on equality; matching ids inside the comma-separated path strings
     # with LIKE forced a nested loop no planner could index, and compile time
     # grew roughly cubically with the graph.
+    #
+    # Both pair CTEs recurse with UNION rather than UNION ALL. The pair
+    # relation is finite (at most n² rows), so UNION stops as soon as a step
+    # produces nothing new, which on a parent_id cycle is the first time round;
+    # UNION ALL re-derives the same pairs forever and compile! never returns.
+    # On a valid tree no step repeats a pair, so the output is the same.
     def ancestor_pairs
       table = pluralize
       name = :"#{singularize}_ancestor_pairs"
       anchor = db[table].select(Sequel[:id].as(:descendant_id), Sequel[:id].as(:ancestor_id))
       step = db[name].join(table, id: :ancestor_id).exclude(Sequel[table][:parent_id] => nil).
         select(Sequel[name][:descendant_id], Sequel[table][:parent_id])
-      db.from(name).with_recursive(name, anchor, step, args: [:descendant_id, :ancestor_id])
+      db.from(name).with_recursive(name, anchor, step, args: [:descendant_id, :ancestor_id], union_all: false)
     end
 
     # Every node paired with itself and each of its descendants, as
     # (ancestor_id, descendant_id). Granting a role grants its whole subtree.
-    def descendant_pairs
+    #
+    # `of:` (a dataset or an array of ids) restricts the anchor to those nodes,
+    # so only their subtrees are walked. Groups and roles are few and the
+    # whole table is cheap; resources are one row per protected record, and an
+    # unanchored CTE materialises every pair of the whole table once per
+    # strategy that joins it.
+    def descendant_pairs(of: nil)
       table = pluralize
       name = :"#{singularize}_descendant_pairs"
       anchor = db[table].select(Sequel[:id].as(:ancestor_id), Sequel[:id].as(:descendant_id))
+      anchor = anchor.where(id: of) unless of.nil?
       step = db[name].join(table, parent_id: :descendant_id).
         select(Sequel[name][:ancestor_id], Sequel[table][:id])
-      db.from(name).with_recursive(name, anchor, step, args: [:ancestor_id, :descendant_id])
+      db.from(name).with_recursive(name, anchor, step, args: [:ancestor_id, :descendant_id], union_all: false)
     end
 
     def cte(id = nil, direction = :desc)

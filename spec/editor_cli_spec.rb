@@ -85,7 +85,8 @@ RSpec.describe SuperAuth::Editor::CLI do
 
           graph = JSON.parse(http.get("/api/graph").body)
           expect(graph["users"].size).to eq 10
-          expect(graph["edges"].size).to eq 42
+          expect(graph["resources"].size).to eq 10
+          expect(graph["edges"].size).to eq 41
 
           foreign = http.get("/api/graph", { "Host" => "evil.example" })
           expect(foreign.code).to eq "403"

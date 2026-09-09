@@ -5,10 +5,15 @@ module DbHelper
 
   def clear_super_auth_tables
     db[:super_auth_edges].delete
+    # MySQL checks the self-referencing parent_id key row by row, so detach
+    # children before deleting the tree tables.
+    db[:super_auth_groups].update(parent_id: nil)
     db[:super_auth_groups].delete
     db[:super_auth_users].delete
     db[:super_auth_permissions].delete
+    db[:super_auth_roles].update(parent_id: nil)
     db[:super_auth_roles].delete
+    db[:super_auth_resources].update(parent_id: nil)
     db[:super_auth_resources].delete
   end
 

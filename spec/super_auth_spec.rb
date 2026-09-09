@@ -15,6 +15,7 @@ RSpec.describe SuperAuth do
     db[:super_auth_permissions].delete
     db[:super_auth_roles].update(parent_id: nil)
     db[:super_auth_roles].delete
+    db[:super_auth_resources].update(parent_id: nil)
     db[:super_auth_resources].delete
   end
 

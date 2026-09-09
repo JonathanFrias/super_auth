@@ -16,8 +16,8 @@ SuperAuth enforces authorization in the database, so any language can participat
 
 ## Supported databases
 
-PostgreSQL 13+, MySQL 8.0+, and SQLite 3.44+. The group and role trees are recursive
-CTEs and the path columns use `concat()`, which sets those floors. CI runs the full
+PostgreSQL 13+, MySQL 8.0+, and SQLite 3.44+. The group, role and resource trees are
+recursive CTEs and the path columns use `concat()`, which sets those floors. CI runs the full
 suite against each of the three. Row-level security is Postgres only.
 
 ## Docs
@@ -28,9 +28,13 @@ How `super_auth` stacks up against other authentication strategies:
 ## Graph editor
 
 A Rails-free editor for the authorization graph: five boxes (groups, roles, users,
-permissions, resources); click any record to trace what it can reach and what reaches
-it; connect two records to draw an edge; delete records and edges; recompile. It ships
-in the gem as a Rack app and a command.
+permissions, resources), of which groups, roles and resources are drawn as trees; click
+any record to trace what it can reach and what reaches it; connect two records to draw
+an edge; create records, including a resource container under a chosen parent; delete
+records and edges; recompile. The editor makes containers, not application records:
+your code registers a record under a container by saving a resource node with
+`parent_id`, and a grant on the container reaches everything under it. It ships in the
+gem as a Rack app and a command.
 
 ```bash
 gem install super_auth rackup webrick        # any Rack server works; puma too
@@ -216,7 +220,8 @@ identity in the current transaction and nothing else, and `SuperAuth::RLS.instal
 reports whether `enable` has run, so no application needs to know the SQL functions'
 signatures. Non-Ruby apps use the SQL contract directly. Each policy checks `super_auth_authorizations` with the same
 semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
-act as a wildcard, per-record authorizations match on id. Any object with an `id`
+act as a wildcard (deprecated, see CHANGELOG 0.8.0), per-record authorizations match
+on id. Any object with an `id`
 works as the user, including SuperAuth's own user records. For a user whose `system?`
 is true, `SuperAuth.as` calls `super_auth_system()` instead, so the connection's role
 must have been given the bypass with `SuperAuth::RLS.grant_system`.
@@ -228,7 +233,11 @@ must have been given the bypass with `SuperAuth::RLS.grant_system`.
   reach protected rows.
 - Creating rows requires a type-level authorization for that resource type (or system
   context): the policy is `FOR ALL` with no `WITH CHECK`, so Postgres reuses its
-  `USING` expression as the implicit `WITH CHECK` for INSERTs and UPDATEs.
+  `USING` expression as the implicit `WITH CHECK` for INSERTs and UPDATEs. Type-level
+  nodes are deprecated (see CHANGELOG 0.8.0) but remain the only way to authorize
+  INSERT here until the parent-record grant planned for the next release; a resource
+  container does not replace one on a protected table, because a per-record row can
+  only match an id that already exists.
 - The transaction stamp calls `pg_current_xact_id()`, which assigns a real transaction
   id even to read-only transactions — one extra xid per protected transaction.
   Negligible for almost everyone; revisit with a virtual-xid variant only if
@@ -273,16 +282,16 @@ The basis for how this works is that the rules engine is trying to match a user 
 The engine determines if it can find an authorization route betewen a user and a resource. It does so by looking at users, groups, roles, permissions.
 
                           +---+           +---+
-                          |   |           |   |      (Group nests within Group,
-                          |   v           |   v       Role nests within Role)
+                          |   |           |   |      (Group, Role and Resource
+                          |   v           |   v       each nest within themselves)
                          +-------+       +------+
                          | Group |<----->| Role |
                          +-------+\    / +------+
                              ^     \  /     ^
                              |      \/      |
-                             |      /\      |
-                             |     /  \     |
-                             V    /    \    V
+                             |      /\      |               +---+
+                             |     /  \     |               |   |
+                             V    /    \    V               |   v
     +---------------+    +------+/      \+------------+    +----------+      +-------------------+
     | YourApp::User |<-->| User |<------>| Permission |<-->| Resource | <--> | YourApp::Resource |
     +---------------+    +------+        +------------+    +----------+      +-------------------+
@@ -292,9 +301,10 @@ The engine determines if it can find an authorization route betewen a user and a
 
 
 The lines between the boxes are called [edges](https://en.wikipedia.org/wiki/Glossary_of_graph_theory#edge).
-The self-loops on `Group` and `Role` mean each nests within itself: a `Group` can contain
-child `Group`s and a `Role` can contain child `Role`s, recursively. Grants on a parent
-flow to every descendant — which is why `Group` and `Role` are described as *trees*.
+The self-loops on `Group`, `Role` and `Resource` mean each nests within itself: a `Group`
+can contain child `Group`s, a `Role` child `Role`s, and a `Resource` child `Resource`s (a
+container with your records registered under it), recursively. Grants on a parent flow to
+every descendant — which is why `Group`, `Role` and `Resource` are described as *trees*.
 
 In general the super_auth has 5 different pathing strategies to search for access.
 
@@ -305,7 +315,7 @@ In general the super_auth has 5 different pathing strategies to search for acces
     5. users <->                                         resource
 
 Edges can be drawn between any 2 objects, allowing super_auth can seamlessly scale in complexity with you.
-When `Group` and `Role` are used, the rules will apply to all descedants. If there are any edges
+When `Group`, `Role` and `Resource` nodes are nested, the rules apply to all descendants. If there are any edges
 between the specified user and the resource, then access is granted.
 
 
@@ -430,13 +440,18 @@ class Resource < ApplicationRecord
 end
 ```
 
-Approve access to the subclass the same way as any other resource — register it by its class name and draw edges to it:
+Approve access to the subclass the same way as any other resource — register it by its class name and draw edges to it. Here the nodes sit in a container, so one edge covers every server registered under it:
 
 ```ruby
-restartable = SuperAuth::Resource.create(
-  name: "restartable servers",
-  external_type: "Resource::ResourceRestartPermission"
-)
+restartable = SuperAuth::Resource.create(name: "restartable servers")   # a container
+servers.each do |server|
+  SuperAuth::Resource.create(
+    name: server.name,
+    external_type: "Resource::ResourceRestartPermission",
+    external_id: server.id,
+    parent: restartable
+  )
+end
 restart = SuperAuth::Permission.create(name: "restart")
 SuperAuth::Edge.create(user: sa_user, permission: restart)
 SuperAuth::Edge.create(permission: restart, resource: restartable)
@@ -447,6 +462,8 @@ Resource::ResourceRestartPermission.find(id) # needs its own explicit approval
 ```
 
 Grants are per class in both directions: a `"Resource"` grant does not unlock the subclass, and a `"Resource::ResourceRestartPermission"` grant does not unlock the base class.
+
+The resource tree is containment, not inheritance. A row compiled through a container copies the descendant node's own `external_type`, so nesting does not weaken the rule above; what weakens it is the node's position. A `"Resource::ResourceRestartPermission"` node whose parent is the `"Resource"` node is a descendant of it and receives every grant drawn on `"Resource"`. Register capability nodes as siblings of their base-class nodes, or in a container beside them as above, never as their children.
 
 ## Row-Level Security for permission-gated models
 
@@ -465,7 +482,7 @@ end
 # outside the block there is no asserted identity, so the policy matches nothing
 ```
 
-Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`); type-level wildcard grants (`resource_external_id IS NULL`) and the system user behave exactly as they do in the ActiveRecord scope. `SuperAuth::RLS.disable(:resources)` removes the policy.
+Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`); type-level wildcard grants (`resource_external_id IS NULL`, deprecated — see CHANGELOG 0.8.0) and the system user behave exactly as they do in the ActiveRecord scope. `SuperAuth::RLS.disable(:resources)` removes the policy.
 
 Because a policy sees only the table, not which Ruby class issued the query, row-level security enforces access to the **base** resource type: a `"Resource"` grant makes the row visible in the database, but the policy cannot distinguish the `"Resource::ResourceRestartPermission"` subclass. Per-class (capability) enforcement therefore stays with the ORM scope — the database is the row-visibility backstop, the client gates the capability.
 

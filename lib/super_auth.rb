@@ -4,8 +4,39 @@ require "sequel"
 module SuperAuth
   class Error < StandardError; end
 
+  # Stand-in for ActiveSupport::Deprecation when ActiveSupport is not loaded:
+  # the same two methods the gem calls. Plain Kernel.warn rather than
+  # `category: :deprecated`, which Ruby hides unless -W:deprecated is set,
+  # and a warning nobody sees is not a deprecation.
+  class Deprecator
+    attr_accessor :silenced
+
+    def warn(message)
+      return if silenced
+      Kernel.warn "DEPRECATION WARNING: #{message}"
+    end
+  end
+
   def self.setup
     yield self if block_given?
+  end
+
+  # Where the gem's deprecation warnings go. An ActiveSupport::Deprecation
+  # when ActiveSupport is loaded, so a Rails host's
+  # config.active_support.deprecation applies once the railtie registers it
+  # under app.deprecators; otherwise the stand-in above. Both answer
+  # `silenced = true`. Memoized, so that setting survives.
+  def self.deprecator
+    @deprecator ||=
+      if defined?(ActiveSupport::Deprecation)
+        ActiveSupport::Deprecation.new("1.0", "SuperAuth")
+      else
+        Deprecator.new
+      end
+  end
+
+  def self.deprecator=(deprecator)
+    @deprecator = deprecator
   end
 
   # Controls behavior when SuperAuth.current_user is blank in ByCurrentUser scope.

@@ -4,11 +4,13 @@ SuperAuth initializer created at config/initializers/super_auth.rb
 
 Next steps:
 
-1. Run migrations to create the database tables:
+1. Copy the engine's migrations into your app and run them:
 
+   rails railties:install:migrations
    rails db:migrate
 
-   (the engine adds its ActiveRecord migrations to your app)
+   (the engine does not run its migrations by itself; repeat both after an
+   upgrade that ships a new one)
 
 2. Mount the engine in config/routes.rb, inside your own authentication.
    It serves the graph editor, which has no authentication of its own:

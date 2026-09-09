@@ -367,6 +367,54 @@ RSpec.describe SuperAuth::RLS do
     end
   end
 
+  # A grant on a container reaches the records registered under it, and each
+  # compiled row keeps the descendant's own type and id, so the policy sees
+  # per-record rows and nothing wider. The container's own row has no type,
+  # which the policy matches against nothing.
+  describe "container grants" do
+    let(:user) { SuperAuth::User.create(name: "member") }
+
+    def register(name, id, under:)
+      SuperAuth::Resource.create(name: name, external_type: "Document", external_id: id, parent: under)
+    end
+
+    it "shows exactly the records registered under the container" do
+      folder = SuperAuth::Resource.create(name: "folder")
+      register("doc1", doc1_id, under: folder)
+      register("doc2", doc2_id, under: folder)
+      db[:documents].insert(name: "doc3") # never registered
+      SuperAuth::Edge.create(user: user, resource: folder)
+      expect(SuperAuth::Authorization.compile!).to eq(3)
+
+      expect(become(user_id: user.id.to_s) { doc_names }).to eq(["doc1", "doc2"])
+    end
+
+    it "grants nothing through the container's own row" do
+      folder = SuperAuth::Resource.create(name: "folder")
+      SuperAuth::Edge.create(user: user, resource: folder)
+      expect(SuperAuth::Authorization.compile!).to eq(1)
+      expect(db[:super_auth_authorizations].select_map([:resource_id, :resource_external_type, :resource_external_id])).to eq([[folder.id, nil, nil]])
+
+      expect(become(user_id: user.id.to_s) { doc_names }).to eq([])
+    end
+
+    # Unlike a type-level wildcard, a container grant is per record, so it
+    # authorizes no INSERT: WITH CHECK reuses USING, and a row that does not
+    # exist yet has no authorization row to match.
+    it "is per-record: INSERT under the identity is still refused" do
+      folder = SuperAuth::Resource.create(name: "folder")
+      register("doc1", doc1_id, under: folder)
+      register("doc2", doc2_id, under: folder)
+      SuperAuth::Edge.create(user: user, resource: folder)
+      SuperAuth::Authorization.compile!
+
+      expect {
+        become(user_id: user.id.to_s) { db[:documents].insert(name: "doc3") }
+      }.to raise_error(Sequel::DatabaseError, /row-level security/)
+      expect(all_doc_names).to eq(["doc1", "doc2"])
+    end
+  end
+
   it "restores full visibility after disable" do
     described_class.disable(:documents)
     expect(doc_names).to eq(["doc1", "doc2"])

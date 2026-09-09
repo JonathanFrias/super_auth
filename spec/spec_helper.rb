@@ -55,6 +55,17 @@ RSpec.configure do |config|
   # triggering implicit auto-inclusion in groups with matching metadata.
   config.shared_context_metadata_behavior = :apply_to_host_groups
 
+  # compile! warns through SuperAuth.deprecator whenever a type-level
+  # (wildcard) resource node exists, and several specs build that shape on
+  # purpose. Silenced for the suite; spec/nested_resources_spec.rb un-silences
+  # it locally. In before(:suite) rather than at load: SuperAuth.deprecator is
+  # memoized on first call as an ActiveSupport::Deprecation only if
+  # ActiveSupport is already loaded, and the spec files that require
+  # active_record load after this file.
+  config.before(:suite) do
+    SuperAuth.deprecator.silenced = true
+  end
+
 # The settings below are suggested to provide a good initial experience
 # with RSpec, but feel free to customize to your heart's content.
   # This allows you to limit a spec run to individual examples or groups

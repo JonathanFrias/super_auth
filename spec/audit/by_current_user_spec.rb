@@ -41,6 +41,7 @@ RSpec.describe "Audit: ByCurrentUser and Authorization.compile!" do
     SuperAuth::ActiveRecord::Permission.delete_all
     SuperAuth::ActiveRecord::Role.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Role.delete_all
+    SuperAuth::ActiveRecord::Resource.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Resource.delete_all
 
     case db.database_type
@@ -236,6 +237,9 @@ RSpec.describe "Audit: ByCurrentUser and Authorization.compile!" do
       SuperAuth::ActiveRecord::Edge.create!(user: admin, resource: every_resource)
       SuperAuth::ActiveRecord::Authorization.compile!
 
+      # Exactly the (type, NULL) row and nothing else: a wildcard is flat, so
+      # the resource subtree walk contributes only the node itself.
+      expect(SuperAuth::ActiveRecord::Authorization.pluck(:resource_id, :resource_external_type, :resource_external_id)).to eq [[every_resource.id, "Resource", nil]]
       SuperAuth.current_user = admin
       expect(resource_class.count).to eq 2
     end

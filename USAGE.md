@@ -62,7 +62,7 @@ rails railties:install:migrations
 rails db:migrate
 ```
 
-This creates the `super_auth_*` tables (users, groups, roles, permissions, resources, edges, authorizations) alongside your application's tables.
+This creates the `super_auth_*` tables (users, groups, roles, permissions, resources, edges, authorizations) alongside your application's tables. The engine does not run its migrations by itself, so repeat both commands after upgrading to a version that ships a new one (0.8.0 adds migration 11, `parent_id` on resources).
 
 **Step 4.** Set the current user in your controller:
 
@@ -134,7 +134,7 @@ SuperAuth models authorization as a graph with 5 entity types:
 | **Group**      | Organizational units (teams, departments, etc) | Yes (nested)  |
 | **Role**       | Job titles or permission sets                  | Yes (nested)  |
 | **Permission** | Actions (read, write, deploy, etc)             | No            |
-| **Resource**   | Things being protected (files, APIs, records)  | No            |
+| **Resource**   | Things being protected (files, APIs, records)  | Yes (nested)  |
 
 **Edges** are connections drawn between any two entities. SuperAuth traverses the graph to find all valid paths from a User to a Resource. If a path exists, access is granted.
 
@@ -245,21 +245,76 @@ write_perm  = SuperAuth::Permission.create(name: "write")
 deploy_perm = SuperAuth::Permission.create(name: "deploy")
 ```
 
-### Resources
+### Resources (hierarchical)
 
-Resources represent what you are protecting. They can link to your app's models.
+Resources represent what you are protecting. A node with neither `external_type` nor `external_id` is a container; a node with both points at one record of your application. Resources nest like groups and roles, and a grant on a node reaches the node and every node under it, so the usual shape is a container per folder, project, tenant or whatever your application nests records under, with the records registered beneath it.
 
 ```ruby
-# Named resource
+# A named resource with nothing behind it
 staging = SuperAuth::Resource.create(name: "staging")
 
-# Linked to an ActiveRecord model
-posts = SuperAuth::Resource.create(
-  name: "posts",
-  external_id: nil,
-  external_type: "Post"
+# A container, and a record of your app registered under it
+reports = SuperAuth::Resource.create(name: "reports")
+q3 = SuperAuth::Resource.create(
+  name: "Q3 report",
+  external_type: "Post",
+  external_id: post.id,
+  parent: reports
 )
+
+# A grant on the container reaches q3, and every node registered under
+# reports later, as of the next compile!
+SuperAuth::Edge.create(permission: read_perm, resource: reports)
 ```
+
+Navigate the tree the same way as groups:
+
+```ruby
+SuperAuth::Resource.roots        # nodes with no parent
+reports.children_dataset.all     # => [q3]
+q3.parent                        # => reports
+```
+
+The compiled row for `q3` carries `q3`'s own `external_type` and `external_id` whether the edge was drawn to `q3` or to `reports`: runtime reads the record a grant reaches and nothing about how it got there. There are no resource path columns in the compiled table; "granted through which container" is a question for the graph (`parent`, `children_dataset`) and the editor.
+
+#### Deprecated: type-level (wildcard) nodes
+
+A node with an `external_type` and no `external_id` is a type-level, or wildcard, node: at runtime it means every record of that type, present and future. `ByCurrentUser` skips per-record filtering when one matches, and the row-level security policy's `resource_external_id IS NULL OR` clause does the same in the database.
+
+```ruby
+# Deprecated: every Post, present and future
+posts = SuperAuth::Resource.create(name: "posts", external_type: "Post")
+```
+
+Wildcard nodes are deprecated as of 0.8.0 and still work: `compile!` warns once per compile naming the ones that exist (silence it with `SuperAuth.deprecator.silenced = true`, or in Rails through `config.active_support.deprecation`), and no removal version is promised. What `compile!` refuses, with a `SuperAuth::Error` naming the node ids, is a wildcard with a parent or children: nested in the tree it would reach every record of its type through its ancestors' grants. A wildcard stays at the root with no children, or gets an `external_id`.
+
+Under Postgres row-level security a wildcard remains the only way to authorize INSERT this release. The policy is `FOR ALL` with `USING` reused as `WITH CHECK`, and a per-record row can only match an id that has already been registered and compiled. A container is not a replacement for it there: it loses INSERT, it needs a node saved and a full recompile for every new record, and saving that node needs a role that can write the gem's tables, which `enable` grants `SELECT` on only. The successor is a grant on a parent record (`SuperAuth::RLS.enable(:documents, resource_type: "Document", parent: { column: :folder_id, resource_type: "Folder" })`, with a `ByCurrentUser` mirror), planned for the next release.
+
+##### Migrating a wildcard to a container
+
+Where the type is not under row-level security, or INSERT is not needed, a wildcard becomes a container plus one node per record. Move the edges off the wildcard before destroying it, so the grants survive, then compile. `Post` is a `super_auth` model, so its default scope hides every row from a process with no current user — the loop reads through `unscoped`; where RLS is installed the database enforces the same rule, so the work runs as the system user:
+
+```ruby
+wildcard = SuperAuth::Resource.where(external_type: "Post", external_id: nil).first
+
+migrate = proc do
+  container = SuperAuth::Resource.create(name: "posts")            # untyped: a container
+  Post.unscoped.find_each do |post|                                  # ByCurrentUser hides every row without a current user
+    SuperAuth::Resource.create(name: post.title, external_type: "Post", external_id: post.id, parent: container)
+  end
+  SuperAuth::Edge.where(resource_id: wildcard.id).update(resource_id: container.id)  # update_all on the ActiveRecord twin
+  wildcard.destroy
+end
+
+if SuperAuth::RLS.installed?
+  SuperAuth.as(SuperAuth::User.system, &migrate)
+else
+  SuperAuth.db.transaction(&migrate)
+end
+SuperAuth::Authorization.compile!   # SuperAuth::ActiveRecord::Authorization.compile! in Rails
+```
+
+Under row-level security this loses INSERT on `posts` until the parent-record grant exists, and a `Post` created afterwards needs its own node and a recompile before anyone sees it.
 
 ## Drawing Edges
 
@@ -311,6 +366,8 @@ SuperAuth automatically evaluates 5 pathing strategies and unions the results. Y
 
 When groups or roles are nested, SuperAuth considers the full tree. If you assign a user to a parent group, they can access resources through roles attached to that group *and all its descendants*.
 
+Resources nest too, at the other end of the path: a grant on a container reaches every node registered under it (see [Resources](#resources-hierarchical)).
+
 ```ruby
 # Bethany is in Company (the root group)
 SuperAuth::Edge.create(user: bethany, group: company)
@@ -348,6 +405,8 @@ auth[:permission_name]  # "read" or nil
 auth[:resource_id]      # Integer
 auth[:resource_name]    # "staging"
 ```
+
+`resource_id` and `resource_name` are the node the grant reaches: a row compiled through a container names the descendant, not the container, and there is no resource path column (see [Resources](#resources-hierarchical)).
 
 ### Filter by user
 
@@ -461,6 +520,8 @@ Post::PostPublishPermission.find(id) # needs a "Post::PostPublishPermission" gra
 
 Approve the subclass like any other resource — register a `SuperAuth::Resource` with `external_type: "Post::PostPublishPermission"` and draw edges to it, then recompile with `SuperAuth::ActiveRecord::Authorization.compile!`.
 
+The resource tree is containment, not inheritance. A row compiled through a container copies the descendant node's own `external_type`, which is why the rule above survives nesting — but a `"Post::PostPublishPermission"` node registered *under* the `"Post"` node is a descendant of it and receives every grant on `"Post"`. Register capability nodes as siblings of their base-class nodes, or in a container beside them, never as their children.
+
 For database-side enforcement of the same rules see "Postgres Row-Level Security" in the README (`SuperAuth::RLS.enable` — visibility is derived automatically from `SuperAuth.current_user`).
 
 ### Linking to your app's models
@@ -475,14 +536,15 @@ sa_user = SuperAuth::User.create(
   external_type: "User"
 )
 
-# Link a SuperAuth resource to your app's Post model
+# Link a SuperAuth resource to one Post
 sa_resource = SuperAuth::Resource.create(
-  name: "posts",
-  external_type: "Post"
+  name: post.title,
+  external_type: "Post",
+  external_id: post.id
 )
 ```
 
-When `super_auth` is included in a model, the default scope matches the current user's `id` and class name against `external_id` / `external_type` in the authorizations table. This means your application user objects work directly -- no need to convert to SuperAuth users in the controller.
+When `super_auth` is included in a model, the default scope matches the current user's `id` and class name against `external_id` / `external_type` in the authorizations table. This means your application user objects work directly -- no need to convert to SuperAuth users in the controller. On the resource side it matches the record's class name and `id` against `resource_external_type` / `resource_external_id`; a node with the type and no id matches every record of the type, the deprecated wildcard shape described under [Resources](#resources-hierarchical).
 
 ### ActiveRecord models
 
@@ -538,9 +600,11 @@ deployers.map { |a| a[:user_name] }.uniq
 ## Visualization
 
 The graph editor shows the whole graph as five boxes (groups, roles, users,
-permissions, resources); click any record to trace what it can reach and what reaches
-it, connect records to draw edges, delete records and edges, and recompile. See the
-README's "Graph editor" section for the full description.
+permissions, resources), drawing groups, roles and resources as trees; click any record
+to trace what it can reach and what reaches it, connect records to draw edges, create
+records (including a resource container under a chosen parent), delete records and
+edges, and recompile. The editor makes containers; your application registers records
+under them. See the README's "Graph editor" section for the full description.
 
 - Rails: mount the engine inside your own authentication (Step 6 above) and open
   `http://localhost:3000/super_auth`.
@@ -577,8 +641,8 @@ write  = SuperAuth::Permission.create(name: "write")
 deploy = SuperAuth::Permission.create(name: "deploy")
 
 # Resources
-api       = SuperAuth::Resource.create(name: "api", external_type: "API")
-dashboard = SuperAuth::Resource.create(name: "dashboard", external_type: "Dashboard")
+api       = SuperAuth::Resource.create(name: "api")
+dashboard = SuperAuth::Resource.create(name: "dashboard")
 prod_db   = SuperAuth::Resource.create(name: "production_db")
 
 # Users
@@ -631,6 +695,7 @@ auths = SuperAuth::Edge.authorizations.all
 | `SuperAuth.current_user`        | Get the current user                                 |
 | `SuperAuth.install_migrations`  | Create all `super_auth_*` tables                     |
 | `SuperAuth.uninstall_migrations`| Drop all `super_auth_*` tables                       |
+| `SuperAuth.deprecator`          | Where deprecation warnings go; `silenced = true` quiets them |
 
 ### Environment Variables
 

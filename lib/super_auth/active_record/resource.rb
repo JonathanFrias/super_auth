@@ -1,6 +1,10 @@
 class SuperAuth::ActiveRecord::Resource < ActiveRecord::Base
   self.table_name = 'super_auth_resources'
   belongs_to :external, polymorphic: true, optional: true
+  # optional: is load-bearing: Rails hosts set belongs_to_required_by_default,
+  # the gem's own suite does not, so a missing one passes CI and fails the
+  # host on every root node.
+  belongs_to :parent, class_name: 'SuperAuth::ActiveRecord::Resource', optional: true
 
   # `super_auth_label` is a stored snapshot of the application record's human
   # name, so the editor can render "Gulf War presumptive" instead of
@@ -33,10 +37,10 @@ class SuperAuth::ActiveRecord::Resource < ActiveRecord::Base
   # path, and never fails the save. Three things derive nil and none of them
   # means "this record has no name": RLS makes the application record
   # unreadable without an asserted identity, external_type is a plain string
-  # that can name a class this process has not loaded, and type-level rows
-  # (external_id IS NULL) have no record to name at all. Writing nil for any
-  # of them would turn "this label is stale" into data, which is the failure
-  # this column exists to avoid.
+  # that can name a class this process has not loaded, and id-less rows — a
+  # container, or a deprecated wildcard — have no record to name at all.
+  # Writing nil for any of them would turn "this label is stale" into data,
+  # which is the failure this column exists to avoid.
   def derived_label
     SuperAuth.label_for(external)
   rescue NameError

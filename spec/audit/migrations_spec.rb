@@ -30,8 +30,10 @@ RSpec.describe "Audit: the ActiveRecord migrations versus the Sequel migrations"
     end
   end
 
+  # There is deliberately no 20250101000008 file: Sequel's 8 adds the edge
+  # indexes that 20250101000006's t.references already created.
   it "D1: the ActiveRecord migrations produce the same schema as the Sequel migrations" do
-    pending "D1: known divergences: only ActiveRecord gives super_auth_authorizations a primary key; parent_id is bigint (AR) vs integer (Sequel); string columns differ in length limits per adapter"
+    pending "D1: known divergences: only ActiveRecord gives super_auth_authorizations a primary key; parent_id on groups, roles and resources is bigint (AR) vs integer (Sequel); string columns differ in length limits per adapter"
     begin
       SuperAuth.uninstall_migrations
     rescue SuperAuth::Error
