@@ -58,7 +58,7 @@ This creates an initializer at `config/initializers/super_auth.rb`. The SuperAut
 **Step 3.** Copy the SuperAuth migrations into your app and run them:
 
 ```bash
-rails railties:install:migrations
+rails super_auth:install:migrations   # the engine-scoped task; railties:install:migrations also works but copies every mounted engine's migrations
 rails db:migrate
 ```
 

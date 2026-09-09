@@ -6,7 +6,7 @@ Next steps:
 
 1. Copy the engine's migrations into your app and run them:
 
-   rails railties:install:migrations
+   rails super_auth:install:migrations
    rails db:migrate
 
    (the engine does not run its migrations by itself; repeat both after an
