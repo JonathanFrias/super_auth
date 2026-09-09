@@ -53,8 +53,8 @@
   .region{display:grid;gap:10px;min-height:0}
   .region.top{flex:1.15;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
     grid-template-areas:"group role" "user perm"}
-  .region.bottom{flex:.85;grid-template-columns:1fr 1fr;grid-template-rows:1fr;
-    grid-template-areas:"resource user2"}
+  .region.bottom{flex:.85;grid-template-columns:1fr;grid-template-rows:1fr;
+    grid-template-areas:"resource"}
 
   /* ---- box ---- */
   .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
@@ -63,7 +63,6 @@
   .box[data-area=user]{grid-area:user;--accent:var(--c-user)}
   .box[data-area=permission]{grid-area:perm;--accent:var(--c-perm)}
   .box[data-area=resource]{grid-area:resource;--accent:var(--c-resource)}
-  .box[data-area=user2]{grid-area:user2;--accent:var(--c-user)}
   .box-head{display:flex;align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid var(--line);flex:none}
   .box-head .swatch{width:10px;height:10px;border-radius:3px;background:var(--accent);flex:none;box-shadow:0 0 10px -2px var(--accent)}
   .box-head .title{font-family:var(--mono);font-weight:600;font-size:13px;letter-spacing:.02em}
@@ -122,7 +121,6 @@
   </section>
   <section class="region bottom">
     <div class="box" data-area="resource" data-type="resource"></div>
-    <div class="box" data-area="user2"     data-type="user"></div>
   </section>
 </main>
 
