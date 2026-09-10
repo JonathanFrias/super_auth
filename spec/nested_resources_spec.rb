@@ -670,9 +670,6 @@ RSpec.describe "nested resources" do
     end
 
     it "(ActiveRecord) adds parent_id with a foreign key on the way up and removes it on the way down" do
-      # Pre-existing and unrelated to 11: 20250101000001's timestamps default
-      # is invalid for a datetime(6) on MySQL 8, so the chain cannot start.
-      skip "the ActiveRecord migration chain does not run on MySQL" if mysql?
       verbose = ActiveRecord::Migration.verbose
       ActiveRecord::Migration.verbose = false
       begin

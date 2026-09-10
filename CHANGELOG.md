@@ -49,6 +49,10 @@
 
 - `compile!` (both twins) is one `INSERT ... SELECT` of `SuperAuth::Edge.authorizations` under the column list `SuperAuth::Edge::AUTHORIZATION_COLUMNS`, the follow-up 0.8.0's upgrade notes tracked, and returns the count from inside the transaction. Row by row through the model the same graph loaded at 574 rows/s against 5,277 through a bulk insert; at 1.44M rows that was about 42 minutes in one held transaction with 3.9 GB of rows resident in Ruby, exposed on the editor's Compile button. On Postgres the eight timestamp columns, which travel through the union as text for MySQL's collation rule, are cast back in the SELECT; `SET LOCAL jit = off` stays.
 
+### Fixed
+
+- The ActiveRecord migration chain runs on MySQL 8. It could not start at all: `20250101000001` declared `t.timestamps default: -> { "CURRENT_TIMESTAMP" }`, and since Rails 7 `t.timestamps` emits `datetime(6)`, where MySQL 8 refuses a default that does not name the same precision — `Mysql2::Error: Invalid default value for 'created_at'` on the first migration, so a Rails host on MySQL could not install the gem. The seven `create_table` migrations now pass `precision: nil`, so MySQL emits `datetime`, which is also what the Sequel twin's `DateTime` emits there; on Postgres and SQLite the column is unchanged, `timestamp` being `timestamp(6)` already. The spec that migrates the whole ActiveRecord chain up and back down no longer skips on MySQL. Pre-existing, and not caused by 0.8.0 or 0.9.0.
+
 ### Removed
 
 - `SuperAuth::Deprecator`, `SuperAuth.deprecator`, `SuperAuth.deprecator=` and the `super_auth.deprecator` railtie initializer, so `app.deprecators[:super_auth]` is no longer registered and `compile!` prints nothing for flat type-level grants. Nothing else used them. A host's `SuperAuth.deprecator.silenced = true` line now raises `NoMethodError`: delete it, or guard it with `SuperAuth.respond_to?(:deprecator)` while both versions are in play.
