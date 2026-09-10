@@ -474,8 +474,10 @@ is 0.59 ms and `count(*)` 563 ms, at 1,000 rows 1.03 ms and 622 ms, at 50,000 ro
 and over 30 s. Somewhere between 1,000 and 50,000 the planner abandons the `BitmapOr` over
 `idx_sa_auth_by_resource` and falls back to scanning `super_auth_authorizations` once per
 outer row. Below about 1,000 you are in the good plan and there is nothing to do. Every
-figure in this section is from a synthetic rig; the one production install measured while
-it was written carried 1,799 compiled rows, 439 of them type-level, where none of this is
+figure in this section is from a synthetic rig, not from any production install, and the
+variable they are in is type-level rows on a protected type — not your record count and
+not your compiled-row count. Take your own two numbers from the queries above before
+deciding you have a problem: most installs sit far below the knee, where none of this is
 worth doing.
 
 Re-time any statement you believe is fine with `SET LOCAL synchronize_seqscans = off`
