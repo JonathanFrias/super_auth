@@ -150,7 +150,11 @@ module SuperAuth
       # reads current_user and nothing else. This is the shape of a host that
       # has not turned RLS on, and of every host on SQLite or MySQL, where
       # RLS.as raises. Turning RLS on later needs no application change: the
-      # same call starts asserting both layers.
+      # same call starts asserting both layers. `options` is dropped rather
+      # than passed on: every one of them is a Sequel transaction option
+      # (auto_savepoint:, isolation:, ...) and there is no transaction here to
+      # give them to. Anything that ever means something outside one has to be
+      # handled before this return, not added to the splat.
       self.current_user = user
       return yield
     end

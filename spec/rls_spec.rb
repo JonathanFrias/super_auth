@@ -1141,11 +1141,22 @@ RSpec.describe SuperAuth::RLS do
         expect(current?).to be(false)
       end
 
-      it "is not current, and the table is stale, once the comment is gone" do
+      # False would say "your parent:/wildcard: arguments are wrong" about a
+      # database whose only fault is that nobody re-ran enable, which is the
+      # state db:migrate alone leaves a host in. stale answers the same
+      # question across every table without raising, so a health check that
+      # wants a bare list still has one.
+      it "raises rather than answering false once the comment is gone, and stale still answers" do
         expect(described_class.stale).to eq([])
         db.run "COMMENT ON POLICY super_auth ON documents IS NULL"
-        expect(current?).to be(false)
+        expect { current? }.to raise_error(SuperAuth::Error, /was not built by this version of enable/)
         expect(described_class.stale).to eq([:documents])
+      end
+
+      it "answers false, and does not raise, for a table carrying no policy of the gem's" do
+        described_class.disable(:documents)
+        expect(current?).to be(false)
+        expect(described_class.stale).to eq([])
       end
 
       it "reads the reach back from the comment" do
@@ -1165,7 +1176,9 @@ RSpec.describe SuperAuth::RLS do
         db.run v1_policy_sql
         expect(policy_qual).to include("IS NULL) OR") # pg_get_expr parenthesises
         expect(described_class.stale).to eq([:documents])
-        expect(current?).to be(false)
+        # No comment at all: built by code that is gone, so there is nothing
+        # to compare these arguments against and false would misdiagnose it.
+        expect { current? }.to raise_error(SuperAuth::Error, /re-run SuperAuth::RLS.enable/)
         # The shape alone rules it out, whatever the comment says.
         db.run "COMMENT ON POLICY super_auth ON documents IS #{db.literal(current_comment)}"
         expect(described_class.stale).to eq([])

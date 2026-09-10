@@ -425,6 +425,19 @@ changed `parent:` in the model and not in the database, and `RENAME COLUMN`, whi
 rewrites the stored expression while the comment keeps the old column name. `installed?`
 is unchanged and means only that the identity functions exist.
 
+**Run `stale` first after any upgrade.** `current?` answers `false` for a table with no
+policy of the gem's, or one whose row security is off or whose reach genuinely
+disagrees — but a policy an *earlier* version of `enable` built makes it **raise**, with
+the same message `reach` and `coverage` give: "the super_auth policy on claims was not
+built by this version of enable (policy version 2); re-run `SuperAuth::RLS.enable`".
+There is nothing to compare these arguments against on such a table, and a bare `false`
+would say "your `parent:`/`wildcard:` arguments are wrong" about a database whose only
+fault is that nobody re-ran `enable` — which is exactly the state `db:migrate` alone
+leaves you in, since no migration re-runs it. It is also the expensive state to be in
+unawares: the 0.8.0 policy is still installed and still correlated per row. `stale` asks
+the same question across every table and never raises, so a health check that wants a
+bare list has one.
+
 ### If you are still on 0.7.x or 0.8.0
 
 The policy those releases installed is one `EXISTS` correlated on the outer row —

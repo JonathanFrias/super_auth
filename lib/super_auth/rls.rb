@@ -132,11 +132,28 @@ module SuperAuth
       # canonical JSON string), and its expression free of the 0.8.0 shape,
       # whose `IS NULL OR` was evaluated once per row. For a test helper or a
       # health check after a deploy that changed parent: or upgraded the gem.
+      #
+      # False means "not built from these arguments" and nothing worse: the
+      # table has no policy of the gem's yet, row security is off or unforced,
+      # or the reach really does disagree. A policy an *earlier* version of
+      # enable built raises instead, with the message `reach` and `coverage`
+      # give, because the question this asks has no answer there — the
+      # comparison is against a comment written by code that is gone, so a
+      # bare false says "your parent:/wildcard: arguments are wrong" about a
+      # database whose only fault is that nobody re-ran enable after the
+      # upgrade. That is the state a host lands in by running db:migrate and
+      # nothing else, since no migration re-runs enable, and it is the
+      # expensive one to be in unawares: the 0.8.0 policy is still installed
+      # and still correlated per row. `stale` names every table in it without
+      # raising, and is the call to make first after an upgrade.
       def current?(table, resource_type:, parent: nil, wildcard: true, db: SuperAuth.db)
         postgres!(db)
         reach = Reach.normalize(resource_type: resource_type, parent: parent)
         row = policy(table, db)
-        !row.nil? && row[:enabled] && row[:forced] &&
+        return false if row.nil?
+
+        assert_policy_version!(table, row[:comment])
+        row[:enabled] && row[:forced] &&
           row[:comment] == comment(reach, wildcard) && !row[:qual].to_s.match?(V1_SHAPE)
       end
 
@@ -497,6 +514,20 @@ module SuperAuth
         parse(comment)&.dig("super_auth")
       end
 
+      # One message for every caller that cannot work with a policy an
+      # earlier enable built: metadata (so reach, coverage and explain) and
+      # current?. It names the action, since there is exactly one.
+      def stale_policy_message(table)
+        "the #{POLICY} policy on #{table} was not built by this version of enable " \
+          "(policy version #{POLICY_VERSION}); re-run SuperAuth::RLS.enable"
+      end
+
+      def assert_policy_version!(table, comment)
+        return if version(comment) == POLICY_VERSION
+
+        raise SuperAuth::Error, stale_policy_message(table)
+      end
+
       # Reach and wildcard from the policy's comment, the reach re-normalised
       # so it is the same frozen shape enable built from.
       def metadata(table, db)
@@ -505,7 +536,7 @@ module SuperAuth
         parsed = parse(row[:comment])
         stored = parsed && parsed["reach"]
         unless parsed && parsed["super_auth"] == POLICY_VERSION && stored.is_a?(Hash) && stored.key?("id") && [true, false].include?(parsed["wildcard"])
-          raise SuperAuth::Error, "the #{POLICY} policy on #{table} was not built by this version of enable (policy version #{POLICY_VERSION}); re-run SuperAuth::RLS.enable"
+          raise SuperAuth::Error, stale_policy_message(table)
         end
         parent = stored.reject { |column, _| column == "id" }.map { |column, types| { column: column, resource_type: types } }
         { reach: Reach.normalize(resource_type: stored["id"], parent: parent), wildcard: parsed["wildcard"] }
