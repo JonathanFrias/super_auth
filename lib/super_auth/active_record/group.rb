@@ -1,5 +1,8 @@
+require_relative "nested"
+
 class SuperAuth::ActiveRecord::Group < ActiveRecord::Base
   self.table_name = 'super_auth_groups'
+  include SuperAuth::ActiveRecord::Nested
 
   belongs_to :parent, class_name: 'SuperAuth::ActiveRecord::Group', optional: true
 

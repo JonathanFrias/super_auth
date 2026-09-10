@@ -1,5 +1,8 @@
+require_relative "nested"
+
 class SuperAuth::ActiveRecord::Resource < ActiveRecord::Base
   self.table_name = 'super_auth_resources'
+  include SuperAuth::ActiveRecord::Nested
   belongs_to :external, polymorphic: true, optional: true
   # optional: is load-bearing: Rails hosts set belongs_to_required_by_default,
   # the gem's own suite does not, so a missing one passes CI and fails the
@@ -17,6 +20,23 @@ class SuperAuth::ActiveRecord::Resource < ActiveRecord::Base
   # with no extra wiring; renames still need refresh_label!, since they do not
   # write this row.
   before_save :set_label, if: :external_id?
+
+  # Type-level nodes that admit nobody: their external_type names no loaded
+  # ActiveRecord class that carries the ByCurrentUser scope — the class does
+  # not exist, or the scope sits only on a nested subclass (User with the
+  # scope on User::Directory and User::Writable) — so every row compiled from
+  # them matches no model's query and nothing notices. Hosts accumulate them
+  # by moving a model to the readonly-base-plus-Writable-subclass pattern and
+  # never pruning the type list that mints the nodes; the first consumer found
+  # seven. Rails-side by necessity: only a process with the models loaded can
+  # say what a type string resolves to, which is why this is not a bucket of
+  # SuperAuth::RLS.coverage.
+  def self.dead_type_level_nodes
+    where(external_id: nil).where.not(external_type: nil).reject do |node|
+      klass = node.external_type.safe_constantize
+      klass.is_a?(Class) && klass < ::ActiveRecord::Base && klass.include?(SuperAuth::ActiveRecord::ByCurrentUser)
+    end
+  end
 
   # Re-derive the label after the application record is renamed. Hosts call it
   # from whatever already syncs the node; super_auth:labels:backfill calls it
@@ -38,7 +58,7 @@ class SuperAuth::ActiveRecord::Resource < ActiveRecord::Base
   # means "this record has no name": RLS makes the application record
   # unreadable without an asserted identity, external_type is a plain string
   # that can name a class this process has not loaded, and id-less rows — a
-  # container, or a deprecated wildcard — have no record to name at all.
+  # container, or a type-level node — have no record to name at all.
   # Writing nil for any of them would turn "this label is stale" into data,
   # which is the failure this column exists to avoid.
   def derived_label

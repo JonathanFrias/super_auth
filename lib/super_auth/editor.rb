@@ -171,7 +171,7 @@ module SuperAuth
         # "Wildcard nodes are flat": compile! refuses a tree with a type-level
         # node in it, so refuse the shape at the door with the reason instead.
         if type == "resource" && parent_node.external_type && parent_node.external_id.nil?
-          return json(422, error: "type-level (wildcard) resources are deprecated and cannot contain other resources; " \
+          return json(422, error: "type-level (wildcard) resources are flat and cannot contain other resources; " \
                                   "make a container (a resource with no external type) instead")
         end
         attrs[:parent_id] = parent.to_i
@@ -187,8 +187,17 @@ module SuperAuth
 
       SuperAuth.db.transaction do
         SuperAuth::Edge.where(COLUMNS[type] => record.id).delete
-        # Children become roots: the deny-safe choice, and required before the
-        # delete on MySQL, which checks the self-referencing key row by row.
+        # The node's own compiled rows go with it: runtime reads only that
+        # table, and a row naming a node that no longer exists would keep
+        # granting until the next compile. Rows compiled through it for its
+        # descendants stay until one runs, as after any other revocation.
+        SuperAuth::Authorization.where(COLUMNS[type] => record.id).delete
+        # Children become roots, deliberately, and the client's confirm says
+        # so: not the grandparent's children, whose grants would then reach
+        # them, and not deleted with the node, which is not what "delete this
+        # container" asks. A root grants nothing by itself, so it is the
+        # deny-safe choice. Also required before the delete on MySQL, which
+        # checks the self-referencing key row by row.
         model.where(parent_id: record.id).update(parent_id: nil) if NESTED.include?(type)
         model.where(id: record.id).delete
       end

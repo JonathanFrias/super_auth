@@ -59,7 +59,7 @@ RSpec.describe SuperAuth::Editor do
   def role(name = "r", parent: nil) = SuperAuth::Role.create(name: name, parent: parent)
   def permission(name = "p") = SuperAuth::Permission.create(name: name)
   def resource(name = "res", parent: nil) = SuperAuth::Resource.create(name: name, parent: parent)
-  # The deprecated type-level shape: a type with no id, meaning every record of it.
+  # The type-level shape: a type with no id, meaning every record of it.
   def wildcard(name = "all docs") = SuperAuth::Resource.create(name: name, external_type: "Document")
 
   describe "mounting" do
@@ -303,7 +303,7 @@ RSpec.describe SuperAuth::Editor do
       all_docs = wildcard
       response = post_json("/api/nodes/resource", { name: "one doc", parent_id: all_docs.id })
       expect(response.status).to eq 422
-      expect(parsed(response)["error"]).to include("type-level (wildcard)", "deprecated", "container")
+      expect(parsed(response)["error"]).to include("type-level (wildcard)", "flat", "container")
       expect(SuperAuth::Resource.count).to eq 1
     end
 
@@ -415,6 +415,37 @@ RSpec.describe SuperAuth::Editor do
       expect(delete("/api/nodes/user/#{u.id}").status).to eq 200
       expect(SuperAuth::User[u.id]).to be_nil
       expect(edges.count).to eq 0
+    end
+
+    # Runtime reads only the compiled table, so a deleted node's rows go with
+    # it; what was compiled through it for its children waits for the next
+    # compile, like any other revocation.
+    it "purges the deleted node's compiled rows and leaves the others until the next compile" do
+      u = user("u")
+      other = user("other")
+      container = resource("clusters")
+      child = resource("production", parent: container)
+      SuperAuth::Edge.create(user: u, resource: container)
+      SuperAuth::Edge.create(user: other, resource: child)
+      expect(parsed(client.post("/api/compile"))).to eq("count" => 3)
+
+      expect(delete("/api/nodes/resource/#{container.id}").status).to eq 200
+      expect(db[:super_auth_authorizations].where(resource_id: container.id).count).to eq 0
+      expect(db[:super_auth_authorizations].select_map([:user_id, :resource_id])).to match_array [[u.id, child.id], [other.id, child.id]]
+      expect(parsed(get("/api/graph"))["authorizations_count"]).to eq 2
+      expect(parsed(client.post("/api/compile"))).to eq("count" => 1)
+    end
+
+    it "purges a deleted user's compiled rows too" do
+      u = user("u")
+      kept = user("kept")
+      res = resource("doc")
+      SuperAuth::Edge.create(user: u, resource: res)
+      SuperAuth::Edge.create(user: kept, resource: res)
+      client.post("/api/compile")
+
+      expect(delete("/api/nodes/user/#{u.id}").status).to eq 200
+      expect(db[:super_auth_authorizations].select_map(:user_id)).to eq [kept.id]
     end
 
     it "pins that a deleted node's children become roots rather than joining the grandparent" do
@@ -558,8 +589,6 @@ RSpec.describe SuperAuth::Editor do
     # models refuse to compile it: the guard's own message reaches the
     # client as a 422 rather than a 500, and the old rows stay.
     it "reports the wildcard guard as a 422 and leaves the compiled table alone" do
-      silenced = SuperAuth.deprecator.silenced
-      SuperAuth.deprecator.silenced = true # the flat wildcard compiles, with a notice
       u = user("u")
       all_docs = wildcard
       SuperAuth::Edge.create(user: u, resource: all_docs)
@@ -570,8 +599,23 @@ RSpec.describe SuperAuth::Editor do
       expect(response.status).to eq 422
       expect(parsed(response)["error"]).to include("Wildcard resource nodes must be flat", all_docs.id.to_s)
       expect(db[:super_auth_authorizations].count).to eq 1
-    ensure
-      SuperAuth.deprecator.silenced = silenced
+    end
+
+    # The API has no way to close a parent_id cycle (a new node has no
+    # children, and the models refuse a re-parent that would), but a raw
+    # write can, and then compile! refuses the table by id.
+    it "reports a parent_id cycle as a 422 naming the nodes, and leaves the compiled table alone" do
+      u = user("u")
+      SuperAuth::Edge.create(user: u, resource: resource("doc"))
+      expect(parsed(client.post("/api/compile"))).to eq("count" => 1)
+
+      a = group("a")
+      b = group("b", parent: a)
+      db[:super_auth_groups].where(id: a.id).update(parent_id: b.id)
+      response = client.post("/api/compile")
+      expect(response.status).to eq 422
+      expect(parsed(response)["error"]).to include("super_auth_groups has a parent_id cycle", "#{a.id}, #{b.id}")
+      expect(db[:super_auth_authorizations].count).to eq 1
     end
   end
 

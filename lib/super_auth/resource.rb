@@ -12,21 +12,52 @@ class SuperAuth::Resource < Sequel::Model(:super_auth_resources)
     # (wildcard) node: at runtime it means every record of that type, present
     # and future (the ByCurrentUser type_level branch, the policy's
     # `resource_external_id IS NULL OR` clause). A node with neither is a
-    # container. Wildcards are deprecated (see warn_deprecated_wildcards) but
-    # still the only way to authorize INSERT under row-level security, so they
-    # stay; what they may not do is join the tree.
+    # container. The type-level grant is a supported, permanent primitive —
+    # "this principal may act on every record of a type" has no cheaper
+    # spelling — and it is flat: what it may not do is join the tree.
     def wildcards
       exclude(external_type: nil).where(external_id: nil)
     end
 
-    # "Wildcard nodes are flat." compile! calls this before touching the
+    # The node registered for one record: the pair every host helper looks
+    # up before it grants, revokes or labels. It refuses a nil id rather than
+    # answering, because where(external_type: type, external_id: nil) is not
+    # "no node" — it IS the type-level node for that type, and a helper called
+    # with an unset foreign key would otherwise act on the grant that covers
+    # every record of the type.
+    def record(type, id)
+      if id.nil?
+        raise SuperAuth::Error, "SuperAuth::Resource.record(#{type.to_s.inspect}, nil): the id is nil. " \
+          "A node with an external_type and no external_id is the type-level node for every #{type} record, " \
+          "not the node for one of them; pass the record's id, or use wildcards for the type-level node."
+      end
+
+      first(external_type: type.to_s, external_id: id)
+    end
+
+    # The recursive step of descendant_pairs stops at a type-level node. A
+    # per-record node nested under one would otherwise receive the
+    # type-level node's grants: one accidental parent_id, and a grant on
+    # "every Claim" also compiled a row for every claim node beneath it, on
+    # every path that reads the walk — including a host that reads
+    # Edge.authorizations directly and never calls compile!, where
+    # assert_compilable! does not run. The walk still anchors on the node a
+    # grant names, so a granted type-level node yields its own (type, NULL)
+    # row and nothing else; join_resource_subtree drops the other direction,
+    # a type-level node reached as a descendant.
+    def descend_from(parent)
+      Sequel.|({ Sequel[parent][:external_type] => nil }, Sequel.~(Sequel[parent][:external_id] => nil))
+    end
+
+    # "Type-level nodes are flat." compile! calls this before touching the
     # compiled table, so a refused compile leaves the previous rows in place.
-    # A wildcard with a parent would compile to a (type, NULL) row reachable
-    # through every ancestor's grants — one edge to a container silently
-    # granting every record of a type — and a wildcard with children would
-    # make the children unreachable except through a grant that already covers
-    # them; neither is a shape anyone means. One query: the wildcards that
-    # have a parent, or that some node names as its parent.
+    # The walk and the join above make the shape harmless; this makes it
+    # loud, because nobody means it. A type-level node with a parent looks
+    # like a container grant that reaches every record of a type, and one
+    # with children looks like a container whose children can only be
+    # reached through a grant that already covers them. One query: the
+    # type-level nodes that have a parent, or that some node names as its
+    # parent.
     def assert_compilable!
       parents = dataset.exclude(parent_id: nil).select(:parent_id)
       nested = wildcards.where(Sequel.|(Sequel.~(parent_id: nil), { id: parents })).select_order_map(:id)
@@ -37,23 +68,6 @@ class SuperAuth::Resource < Sequel::Model(:super_auth_resources)
         "for every record of that type, not a container: nested in the tree it would compile to a row that " \
         "reaches every record of its type through the tree. Move each to the root with no children, or give " \
         "it an external_id."
-    end
-
-    # One warning per compile, naming what exists, through SuperAuth.deprecator
-    # so a Rails host's deprecation config (notify, raise, silence) applies.
-    # A no-op when there are none, which is the common case.
-    def warn_deprecated_wildcards
-      rows = wildcards.order(:id).select_map([:id, :name])
-      return if rows.empty?
-
-      listed = rows.first(10).map { |id, name| "#{name} (#{id})" }
-      listed << "..." if rows.size > 10
-      SuperAuth.deprecator.warn(
-        "#{rows.size} type-level (wildcard) resource node#{'s' if rows.size > 1} " \
-        "(external_type set, external_id NULL): #{listed.join(', ')}. Wildcard nodes are deprecated. " \
-        "They still work, and they remain the only way to authorize INSERT under row-level security; " \
-        "the successor is a grant on a parent record. See the CHANGELOG."
-      )
     end
   end
 end

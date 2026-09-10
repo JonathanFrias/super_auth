@@ -251,12 +251,11 @@ function render(){
       // The external record occupies one slot: its label when the graph
       // stored one, otherwise the Type#id that used to be the only
       // rendering. Either way the other half is the tooltip. A type with no
-      // id is the deprecated type-level (wildcard) node — every record of
-      // the type — and its tooltip says so, since Type#* alone reads as a
-      // typo.
+      // id is the type-level (wildcard) node — every record of the type —
+      // and its tooltip says so, since Type#* alone reads as a typo.
       const wildcard = type === "resource" && !!n.external_type && n.external_id == null;
       const ref = n.external_type ? `${escapeHtml(n.external_type)}#${escapeHtml(n.external_id ?? "*")}` : "";
-      const kind = wildcard ? "type-level (deprecated)" : "external record";
+      const kind = wildcard ? "type-level grant" : "external record";
       const ext = !ref ? "" : (n.super_auth_label
         ? `<span class="ext" title="${wildcard ? `${ref} · ${kind}` : ref}">${escapeHtml(n.super_auth_label)}</span>`
         : `<span class="ext" title="${kind}">${ref}</span>`);

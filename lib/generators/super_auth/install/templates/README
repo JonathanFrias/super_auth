@@ -10,7 +10,9 @@ Next steps:
    rails db:migrate
 
    (the engine does not run its migrations by itself; repeat both after an
-   upgrade that ships a new one)
+   upgrade that ships a new one, and re-run SuperAuth::RLS.enable for any
+   table under row-level security, since a policy already in the database
+   does not change with the gem — SuperAuth::RLS.stale lists the ones behind)
 
 2. Mount the engine in config/routes.rb, inside your own authentication.
    It serves the graph editor, which has no authentication of its own:

@@ -1,4 +1,6 @@
 require "spec_helper"
+require "active_record"
+require "super_auth/editor/seed"
 
 RSpec.describe "SuperAuth::Authorization.compile!" do
   let(:db) { SuperAuth.db }
@@ -66,18 +68,57 @@ RSpec.describe "SuperAuth::Authorization.compile!" do
     expect(db[:super_auth_authorizations].count).to eq 0
   end
 
-  it "leaves the previous table intact when an insert fails part-way" do
+  # The delete and the INSERT ... SELECT are one transaction: a source that
+  # fails after the delete rolls the delete back too.
+  it "leaves the previous table intact when the insert fails" do
     u = SuperAuth::User.create(name: "u")
     %w[a b].each { |n| SuperAuth::Edge.create(user: u, resource: SuperAuth::Resource.create(name: n)) }
     expect(SuperAuth::Authorization.compile!).to eq 2
-    first_row = SuperAuth::Edge.authorizations.first
-    broken = Enumerator.new do |y|
-      y << first_row
-      raise "boom"
-    end
-    allow(SuperAuth::Edge).to receive(:authorizations).and_return(broken)
+    broken = db[:no_such_table].select(*SuperAuth::Edge::AUTHORIZATION_COLUMNS)
+    allow(SuperAuth::Authorization).to receive(:compile_source).and_return(broken)
 
-    expect { SuperAuth::Authorization.compile! }.to raise_error(RuntimeError, "boom")
+    expect { SuperAuth::Authorization.compile! }.to raise_error(Sequel::DatabaseError)
     expect(db[:super_auth_authorizations].count).to eq 2
+  end
+
+  describe "as one INSERT ... SELECT" do
+    def rows
+      db[:super_auth_authorizations].select(*SuperAuth::Edge::AUTHORIZATION_COLUMNS).all.
+        map { |row| row.transform_values { |v| v.is_a?(Time) ? v.strftime("%F %T") : v.to_s } }.
+        sort_by { |row| row.values }
+    end
+
+    # The rows a row-by-row compile wrote: each row of the union, inserted
+    # through Sequel as a Hash, the way both twins did before 0.9.0.
+    def rows_inserted_one_by_one
+      db[:super_auth_authorizations].delete
+      SuperAuth::Edge.authorizations.each { |row| db[:super_auth_authorizations].insert(row) }
+      rows
+    end
+
+    # The editor's seed graph has every strategy, nested groups and roles, a
+    # container grant, and a leaf granted twice through different paths.
+    it "writes the same rows as a row-by-row compile of the editor seed graph, from both twins" do
+      SuperAuth::Editor::Seed.run!
+      expected_count = SuperAuth::Edge.authorizations.count
+      expect(expected_count).to be > 30
+
+      expect(SuperAuth::Authorization.compile!).to eq expected_count
+      from_sequel = rows
+      expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq expected_count
+      from_active_record = rows
+      one_by_one = rows_inserted_one_by_one
+
+      expect(from_sequel.size).to eq expected_count
+      expect(from_sequel).to eq one_by_one
+      expect(from_active_record).to eq one_by_one
+    end
+
+    it "inserts under the union's 28 columns, in its order" do
+      expect(SuperAuth::Edge::AUTHORIZATION_COLUMNS).to eq SuperAuth::Edge.authorizations.columns
+      expect(SuperAuth::Edge::AUTHORIZATION_COLUMNS.size).to eq 28
+      sql = db[:super_auth_authorizations].insert_sql(SuperAuth::Edge::AUTHORIZATION_COLUMNS, SuperAuth::Authorization.compile_source)
+      expect(sql).to match(/\AINSERT INTO .super_auth_authorizations. \(.user_id., .*.resource_external_type.\) SELECT /m)
+    end
   end
 end

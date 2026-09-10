@@ -1,7 +1,9 @@
 require "spec_helper"
 
 # Findings from the September 2026 test audit, pinned as specs. Most are still
-# open; the A1 pairs examples passed once the pair CTEs recursed with UNION.
+# open; the A1 pairs examples passed once the pair CTEs recursed with UNION,
+# and the A1 write-time examples once SuperAuth::Nestable validated parent_id
+# (0.9.0, with compile! refusing a cycle that got in around the model).
 #
 # - An example that starts with `pending "..."` documents a live defect: it runs,
 #   fails, and RSpec reports it as pending. When a fix lands the example passes,
@@ -54,34 +56,47 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
     end
   end
 
+  # A cycle that got in around the models. On Postgres migration 13's trigger
+  # refuses the raw write too, so the statement runs with triggers off, as a
+  # pg_restore or a replication apply does (session_replication_role): a
+  # cycle that predates the migration, or arrived that way, is exactly what
+  # the guards under test must still catch.
+  def close_cycle(table, id, parent_id)
+    guarded = table == :super_auth_resources && db.database_type == :postgres
+    db.transaction do
+      db.run "SET LOCAL session_replication_role = replica" if guarded
+      db[table].where(id: id).update(parent_id: parent_id)
+      db.run "SET LOCAL session_replication_role = origin" if guarded
+    end
+  end
+
   def grants
     SuperAuth::Edge.authorizations.all.map { |a| [a[:user_name], a[:group_name], a[:role_name], a[:permission_name], a[:resource_name]] }.sort_by(&:to_s)
   end
 
   describe "A1: cycles in the group and role trees" do
     it "A1: rejects a group that is made its own parent" do
-      pending "A1: nothing prevents parent_id = id (no model validation, no CHECK constraint)"
       group = SuperAuth::Group.create(name: "loop")
-      expect { group.update(parent_id: group.id) }.to raise_error(StandardError)
+      expect { group.update(parent_id: group.id) }.to raise_error(Sequel::ValidationFailed, /parent_id cannot be the node itself/)
+      expect(SuperAuth::Group[group.id].parent_id).to be_nil
     end
 
     it "A1: rejects re-parenting that closes a two-node cycle" do
-      pending "A1: nothing prevents a -> b -> a"
       a = SuperAuth::Group.create(name: "a")
       b = SuperAuth::Group.create(name: "b", parent: a)
-      expect { a.update(parent_id: b.id) }.to raise_error(StandardError)
+      expect { a.update(parent_id: b.id) }.to raise_error(Sequel::ValidationFailed, /parent_id is inside the node's own subtree/)
+      expect(SuperAuth::Group[a.id].parent_id).to be_nil
     end
 
     it "A1: rejects a role that is made its own parent" do
-      pending "A1: nothing prevents parent_id = id (no model validation, no CHECK constraint)"
       role = SuperAuth::Role.create(name: "loop")
-      expect { role.update(parent_id: role.id) }.to raise_error(StandardError)
+      expect { role.update(parent_id: role.id) }.to raise_error(Sequel::ValidationFailed, /parent_id cannot be the node itself/)
     end
 
     it "A1: Group.ancestor_pairs terminates on a cyclic tree" do
       a = SuperAuth::Group.create(name: "a")
       b = SuperAuth::Group.create(name: "b", parent: a)
-      db[:super_auth_groups].where(id: a.id).update(parent_id: b.id) # raw, bypassing any future model validation
+      close_cycle(:super_auth_groups, a.id, b.id) # raw, around the model validation
 
       pairs = with_query_timeout(3) { SuperAuth::Group.ancestor_pairs.map { |r| [r[:descendant_id], r[:ancestor_id]] } }
       expect(pairs).to include([a.id, a.id], [a.id, b.id], [b.id, a.id], [b.id, b.id])
@@ -90,40 +105,71 @@ RSpec.describe "Audit: graph invariants and tree semantics" do
     it "A1: Role.descendant_pairs terminates on a cyclic tree" do
       a = SuperAuth::Role.create(name: "a")
       b = SuperAuth::Role.create(name: "b", parent: a)
-      db[:super_auth_roles].where(id: a.id).update(parent_id: b.id)
+      close_cycle(:super_auth_roles, a.id, b.id)
 
       pairs = with_query_timeout(3) { SuperAuth::Role.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] } }
       expect(pairs).to include([a.id, a.id], [a.id, b.id], [b.id, a.id], [b.id, b.id])
     end
 
     # Resources nest since 0.8.0 and compile! joins their pairs, so a resource
-    # cycle must not hang a compile. The group and role path CTEs the
-    # strategies join are anchored on the roots and walk downward, so they
-    # never enter a cycle either: compile! returns, and every grant through a
-    # cyclic component compiles to no rows (pinned below). A write-time check
-    # against cycles — the pending A1 examples above — remains open.
-    it "A1: Resource.descendant_pairs terminates on a cyclic tree, and so does compile!" do
+    # cycle must not hang a compile. The pair CTEs terminate on one (UNION),
+    # and the compile that followed was the quiet part: the resource walk is
+    # anchored on the grant and walks the whole cycle, so a grant on either
+    # node reached both. Since 0.9.0 compile! refuses the table by id
+    # instead (assert_acyclic!), which is the only loud thing a cycle that
+    # got in around the model can meet.
+    it "A1: Resource.descendant_pairs terminates on a cyclic tree, and compile! refuses it by id" do
       a = SuperAuth::Resource.create(name: "a")
       b = SuperAuth::Resource.create(name: "b", parent: a)
-      db[:super_auth_resources].where(id: a.id).update(parent_id: b.id)
+      close_cycle(:super_auth_resources, a.id, b.id)
       SuperAuth::Edge.create(user: SuperAuth::User.create(name: "u"), resource: a)
 
       pairs = with_query_timeout(3) { SuperAuth::Resource.descendant_pairs.map { |r| [r[:ancestor_id], r[:descendant_id]] } }
       expect(pairs).to include([a.id, a.id], [a.id, b.id], [b.id, a.id], [b.id, b.id])
-      expect(with_query_timeout(3) { SuperAuth::Authorization.compile! }).to eq 2
+      expect { with_query_timeout(10) { SuperAuth::Authorization.compile! } }.
+        to raise_error(SuperAuth::Error, /super_auth_resources has a parent_id cycle: node\(s\) #{a.id}, #{b.id} cannot be reached from any root/)
     end
 
-    it "A1: a cyclic group compiles to no rows for the paths through it, instead of hanging" do
+    # Migration 13: on Postgres a BEFORE trigger on super_auth_resources
+    # refuses the raw write itself, so the cycle never lands for a writer
+    # that goes around the models (a data migration, another language). The
+    # other adapters rely on the model and compile guards above.
+    it "A1: (Postgres) a raw write that closes a resource cycle is refused by the trigger" do
+      skip "the parent_id trigger is Postgres only" unless db.database_type == :postgres
+      a = SuperAuth::Resource.create(name: "a")
+      b = SuperAuth::Resource.create(name: "b", parent: a)
+
+      expect { db[:super_auth_resources].where(id: a.id).update(parent_id: b.id) }.
+        to raise_error(Sequel::CheckConstraintViolation, /parent_id #{b.id} is inside the subtree of node #{a.id}/)
+      expect { db[:super_auth_resources].where(id: a.id).update(parent_id: a.id) }.
+        to raise_error(Sequel::CheckConstraintViolation, /node #{a.id} cannot be its own parent/)
+      expect(db[:super_auth_resources].where(id: a.id).get(:parent_id)).to be_nil
+      # Re-parenting elsewhere and inserting under an existing node still work.
+      elsewhere = SuperAuth::Resource.create(name: "elsewhere")
+      db[:super_auth_resources].where(id: a.id).update(parent_id: elsewhere.id)
+      expect { SuperAuth::Resource.assert_acyclic! }.not_to raise_error
+    end
+
+    # The group and role path CTEs the strategies join are anchored on the
+    # roots and walk downward, so a cyclic component is unreachable and every
+    # grant through it yields no rows: fail-closed for a host that reads
+    # Edge.authorizations directly. compile! does not settle for that; it
+    # names the nodes and leaves the compiled table alone.
+    it "A1: a cyclic group grants nothing through the graph, and compile! refuses it by id" do
       a = SuperAuth::Group.create(name: "a")
       b = SuperAuth::Group.create(name: "b", parent: a)
-      db[:super_auth_groups].where(id: a.id).update(parent_id: b.id)
+      close_cycle(:super_auth_groups, a.id, b.id)
       permission = SuperAuth::Permission.create(name: "read")
       SuperAuth::Edge.create(user: SuperAuth::User.create(name: "u"), group: b)
       SuperAuth::Edge.create(group: a, permission: permission)
       SuperAuth::Edge.create(permission: permission, resource: SuperAuth::Resource.create(name: "r"))
 
-      # Fail-closed: the cycle has no root, so the tree CTE never reaches it.
-      expect(with_query_timeout(3) { SuperAuth::Authorization.compile! }).to eq 0
+      # The five-strategy union takes ~0.3 s idle and has passed 3 s on a
+      # loaded machine; a runaway CTE never returns, so the wider budget
+      # still catches one.
+      expect(with_query_timeout(10) { SuperAuth::Edge.authorizations.count }).to eq 0
+      expect { with_query_timeout(10) { SuperAuth::Authorization.compile! } }.
+        to raise_error(SuperAuth::Error, /super_auth_groups has a parent_id cycle: node\(s\) #{a.id}, #{b.id}/)
     end
   end
 

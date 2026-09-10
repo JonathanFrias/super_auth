@@ -2,6 +2,8 @@ class EnableSuperAuthRls < ActiveRecord::Migration[<%= ActiveRecord::Migration.c
   def up
 <% model_names.each do |model| -%>
     SuperAuth::RLS.enable(:<%= model.tableize.tr('/', '_') %>, resource_type: "<%= model.camelize %>")
+    # Tenancy, not capability: a parent grant admits every row whose column holds a granted record's id, so list every type that may touch the row at all and let the ORM decide who writes.
+    #   parent: { column: :organization_id, resource_type: ["Organization::Member"] }
 <% end -%>
     # Roles allowed to bypass the policies (migrations, seeds, admin jobs):
     # SuperAuth::RLS.grant_system(:app_admin)

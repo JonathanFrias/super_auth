@@ -1,6 +1,5 @@
 require "spec_helper"
 require "active_record"
-require "stringio"
 
 # belongs_to :external resolves its class by name, so the stand-in for a
 # host's model needs a real constant and a real table (as in label_spec).
@@ -11,8 +10,9 @@ end
 # Resources nest like groups and roles (0.8.0): a grant on a node reaches the
 # node and every node under it, through each of the five path strategies. A
 # node with neither external_type nor external_id is a container. A node with
-# an external_type and no external_id is a type-level (wildcard) node, which
-# is deprecated and must stay flat.
+# an external_type and no external_id is a type-level (wildcard) node: a
+# supported grant on every record of its type, which stays flat — the walk
+# never descends from one and never reaches one through a parent.
 RSpec.describe "nested resources" do
   let(:db) { SuperAuth.db }
 
@@ -51,6 +51,20 @@ RSpec.describe "nested resources" do
       map { |id, type, external_id| [id, type, external_id&.to_s] }
   end
 
+  # A cycle that got in around the models. On Postgres migration 13's trigger
+  # refuses the raw write too, so the statement runs with triggers off, as a
+  # pg_restore or a replication apply does (session_replication_role): a
+  # cycle that predates the migration, or arrived that way, is exactly what
+  # the guards under test must still catch.
+  def close_cycle(table, id, parent_id)
+    guarded = table == :super_auth_resources && db.database_type == :postgres
+    db.transaction do
+      db.run "SET LOCAL session_replication_role = replica" if guarded
+      db[table].where(id: id).update(parent_id: parent_id)
+      db.run "SET LOCAL session_replication_role = origin" if guarded
+    end
+  end
+
   # A container holding two registered records. The records carry a type and
   # an id so the compiled rows show a descendant keeping its own columns; the
   # container carries neither.
@@ -59,17 +73,6 @@ RSpec.describe "nested resources" do
     a = SuperAuth::Resource.create(name: "a", external_type: "Document", external_id: "1", parent: container)
     b = SuperAuth::Resource.create(name: "b", external_type: "Document", external_id: "2", parent: container)
     [container, a, b]
-  end
-
-  # Both deprecators write to $stderr: ActiveSupport::Deprecation's default
-  # behaviour and the stand-in SuperAuth::Deprecator alike.
-  def capture_stderr
-    previous = $stderr
-    $stderr = StringIO.new
-    yield
-    $stderr.string
-  ensure
-    $stderr = previous
   end
 
   describe "a grant on a container" do
@@ -317,101 +320,248 @@ RSpec.describe "nested resources" do
       expect(rows).to include(["Document", "1"], ["Document", "2"])
       expect(rows).not_to include(["Document", nil])
     end
-  end
 
-  describe "the wildcard deprecation" do
-    # Silenced for the suite in spec_helper; audible here.
-    around do |example|
-      SuperAuth.deprecator.silenced = false
-      example.run
-    ensure
-      SuperAuth.deprecator.silenced = true
-    end
-
-    it "warns once per compile, naming the wildcard node" do
+    # The other direction. A per-record node nested under a wildcard used to
+    # receive the wildcard's grants through the walk: one accidental
+    # parent_id, and "every Claim" also compiled a row per claim node under
+    # it — a row for every claim in a real graph. The walk itself no longer
+    # descends from a wildcard, so this holds for a host that reads
+    # Edge.authorizations directly and never runs the guard.
+    it "never descends from a wildcard, even past the guard: a wildcard grant is its own row only" do
       wildcard = SuperAuth::Resource.create(name: "all docs", external_type: "Document")
+      one = SuperAuth::Resource.create(name: "one", external_type: "Document", external_id: "1")
+      two = SuperAuth::Resource.create(name: "two", external_type: "Document", external_id: "2", parent: one)
+      db[:super_auth_resources].where(id: one.id).update(parent_id: wildcard.id)
+      permission = SuperAuth::Permission.create(name: "read")
       SuperAuth::Edge.create(user: user, resource: wildcard)
+      SuperAuth::Edge.create(user: user, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: wildcard)
 
-      output = capture_stderr { SuperAuth::Authorization.compile! }
-      expect(output).to match(/wildcard/).and match(/deprecated/)
-      expect(output).to match(/^DEPRECATION WARNING: 1 type-level \(wildcard\) resource node \(external_type set, external_id NULL\): all docs \(#{wildcard.id}\)\. Wildcard nodes are deprecated\./)
-      expect(output.scan("DEPRECATION WARNING").size).to eq 1
+      pairs = SuperAuth::Edge.resource_subtrees.map { |r| [r[:ancestor_id], r[:descendant_id]] }
+      expect(pairs).to eq [[wildcard.id, wildcard.id]]
+      # Two strategies each yield the wildcard's own row, and nothing else.
+      [SuperAuth::Edge.authorizations, SuperAuth::Edge.users_resources, SuperAuth::Edge.users_permissions_resources].each do |relation|
+        rows = relation.map { |r| [r[:resource_id], r[:resource_external_type], r[:resource_external_id]&.to_s] }
+        expect(rows.uniq).to eq [[wildcard.id, "Document", nil]]
+      end
+      expect(SuperAuth::Edge.authorizations.count).to eq 2
+      expect(SuperAuth::Resource.descendant_pairs(of: [wildcard.id]).count).to eq 1
+      expect(SuperAuth::Resource.descendant_pairs(of: [one.id]).map { |r| r[:descendant_id] }).to match_array [one.id, two.id]
     end
 
-    it "warns from the ActiveRecord twin as well" do
-      wildcard = SuperAuth::Resource.create(name: "all docs", external_type: "Document")
-      SuperAuth::Edge.create(user: user, resource: wildcard)
-
-      output = capture_stderr { SuperAuth::ActiveRecord::Authorization.compile! }
-      expect(output).to match(/wildcard/).and match(/deprecated/)
-      expect(output).to include("all docs (#{wildcard.id})")
-    end
-
-    it "counts and lists every wildcard, granted or not" do
-      SuperAuth::Resource.create(name: "all claims", external_type: "Claim")
-      SuperAuth::Resource.create(name: "all docs", external_type: "Document")
-
-      output = capture_stderr { SuperAuth::Authorization.compile! }
-      expect(output).to match(/2 type-level \(wildcard\) resource nodes \(external_type set, external_id NULL\): all claims \(\d+\), all docs \(\d+\)\./)
-    end
-
-    it "says nothing for a graph of containers and records" do
-      container, _a, _b = container_with_records
+    it "stops at a wildcard in the middle of a tree: neither it nor anything under it is reached" do
+      container, a, _b = container_with_records
+      wildcard = SuperAuth::Resource.create(name: "all claims", external_type: "Claim")
+      under = SuperAuth::Resource.create(name: "claim 9", external_type: "Claim", external_id: "9")
+      db[:super_auth_resources].where(id: wildcard.id).update(parent_id: container.id)
+      db[:super_auth_resources].where(id: under.id).update(parent_id: wildcard.id)
       SuperAuth::Edge.create(user: user, resource: container)
 
-      expect(capture_stderr { SuperAuth::Authorization.compile! }).not_to include("DEPRECATION WARNING")
-      expect(capture_stderr { SuperAuth::ActiveRecord::Authorization.compile! }).not_to include("DEPRECATION WARNING")
-    end
-
-    it "warns after the commit, so a raising deprecation reports a compile that happened" do
-      wildcard = SuperAuth::Resource.create(name: "all docs", external_type: "Document")
-      SuperAuth::Edge.create(user: user, resource: wildcard)
-      previous = SuperAuth.deprecator
-      SuperAuth.deprecator = ActiveSupport::Deprecation.new("1.0", "SuperAuth").tap { |d| d.behavior = :raise }
-
-      expect { SuperAuth::Authorization.compile! }.to raise_error(ActiveSupport::DeprecationException)
-      expect(db[:super_auth_authorizations].count).to eq 1
-      expect { SuperAuth::ActiveRecord::Authorization.compile! }.to raise_error(ActiveSupport::DeprecationException)
-      expect(db[:super_auth_authorizations].count).to eq 1
-    ensure
-      SuperAuth.deprecator = previous
+      ids = SuperAuth::Edge.authorizations.map { |r| r[:resource_id] }
+      expect(ids).to include(container.id, a.id)
+      expect(ids).not_to include(wildcard.id, under.id)
     end
   end
 
-  describe "SuperAuth.deprecator" do
-    # This file requires active_record before spec_helper's before(:suite)
-    # first touches SuperAuth.deprecator, so the memoized deprecator is an
-    # ActiveSupport::Deprecation and a Rails host's deprecation config applies.
-    it "is an ActiveSupport::Deprecation when ActiveSupport is loaded" do
-      expect(SuperAuth.deprecator).to be_a(ActiveSupport::Deprecation)
+  describe "SuperAuth::Resource.record" do
+    it "finds the node registered for one record, by type name or class" do
+      node = SuperAuth::Resource.create(name: "doc 1", external_type: "Document", external_id: "1")
+      SuperAuth::Resource.create(name: "all docs", external_type: "Document")
+
+      expect(SuperAuth::Resource.record("Document", "1")).to eq node
+      expect(SuperAuth::Resource.record(SuperAuthNestedSpecPost, "1")).to be_nil
+      expect(SuperAuth::Resource.record("Document", "2")).to be_nil
     end
 
-    it "can be replaced, and compile! warns through the replacement" do
-      previous = SuperAuth.deprecator
-      SuperAuth.deprecator = SuperAuth::Deprecator.new
-      wildcard = SuperAuth::Resource.create(name: "all docs", external_type: "Document")
+    # where(external_type: type, external_id: nil) is the wildcard, not "no
+    # node": a host helper handed an unset foreign key would otherwise grant,
+    # revoke or delete the node that covers every record of the type.
+    it "refuses a nil id instead of answering with the type-level node" do
+      SuperAuth::Resource.create(name: "all docs", external_type: "Document")
 
-      output = capture_stderr { SuperAuth::Authorization.compile! }
-      expect(output).to include(
-        "DEPRECATION WARNING: 1 type-level (wildcard) resource node (external_type set, external_id NULL): " \
-        "all docs (#{wildcard.id}). Wildcard nodes are deprecated. They still work, and they remain the only way " \
-        "to authorize INSERT under row-level security; the successor is a grant on a parent record. See the CHANGELOG.\n"
-      )
-    ensure
-      SuperAuth.deprecator = previous
+      expect { SuperAuth::Resource.record("Document", nil) }.
+        to raise_error(SuperAuth::Error, /record\("Document", nil\): the id is nil.*type-level node for every Document record/)
+    end
+  end
+
+  describe "cycles" do
+    # A cycle does not hang a compile (UNION), which is exactly the problem:
+    # every node in it is an ancestor of every other, so a grant on any of
+    # them silently reaches all their subtrees. Refused at the model, in
+    # both ORMs, and by compile! for a write that went around them.
+    describe "at the model" do
+      it "refuses a resource that is made its own parent" do
+        node = SuperAuth::Resource.create(name: "loop")
+
+        expect { node.update(parent_id: node.id) }.to raise_error(Sequel::ValidationFailed, /parent_id cannot be the node itself/)
+        expect(SuperAuth::Resource[node.id].parent_id).to be_nil
+      end
+
+      it "refuses a parent inside the node's own subtree, and allows any other" do
+        a = SuperAuth::Resource.create(name: "a")
+        b = SuperAuth::Resource.create(name: "b", parent: a)
+        c = SuperAuth::Resource.create(name: "c", parent: b)
+        elsewhere = SuperAuth::Resource.create(name: "elsewhere")
+
+        expect { a.update(parent: c) }.to raise_error(Sequel::ValidationFailed, /parent_id is inside the node's own subtree, which would close a cycle/)
+        expect { a.update(parent_id: b.id) }.to raise_error(Sequel::ValidationFailed)
+        expect(SuperAuth::Resource[a.id].parent_id).to be_nil
+        a.update(parent: elsewhere)
+        expect(SuperAuth::Resource[a.id].parent_id).to eq elsewhere.id
+        c.update(parent: a)
+        expect(SuperAuth::Resource[c.id].parent_id).to eq a.id
+      end
+
+      # The check walks up from the new parent, so it does not stop where the
+      # descendant walk stops: a wildcard that was given children (raw) is
+      # still refused as a parent of one of them.
+      it "catches a cycle through a wildcard, where the descendant walk would not look" do
+        wildcard = SuperAuth::Resource.create(name: "all docs", external_type: "Document")
+        child = SuperAuth::Resource.create(name: "child")
+        db[:super_auth_resources].where(id: child.id).update(parent_id: wildcard.id)
+
+        expect { wildcard.update(parent_id: child.id) }.to raise_error(Sequel::ValidationFailed, /inside the node's own subtree/)
+      end
+
+      it "does not run the walk for a save that leaves parent_id alone" do
+        a = SuperAuth::Resource.create(name: "a")
+        b = SuperAuth::Resource.create(name: "b", parent: a)
+        close_cycle(:super_auth_resources, a.id, b.id) # already there
+
+        expect { b.update(name: "renamed") }.not_to raise_error
+      end
+
+      %w[Group Role Resource].each do |name|
+        it "(ActiveRecord) refuses both shapes on #{name}" do
+          model = SuperAuth::ActiveRecord.const_get(name)
+          a = model.create!(name: "a")
+          b = model.create!(name: "b", parent: a)
+          c = model.create!(name: "c", parent: b)
+
+          expect { a.update!(parent_id: a.id) }.to raise_error(ActiveRecord::RecordInvalid, /Parent cannot be the node itself/)
+          expect { a.update!(parent: c) }.to raise_error(ActiveRecord::RecordInvalid, /Parent is inside the node's own subtree, which would close a cycle/)
+          expect(a.update(parent_id: b.id)).to be false
+          expect(a.errors[:parent_id]).to eq ["is inside the node's own subtree, which would close a cycle"]
+          expect(model.find(a.id).parent_id).to be_nil
+          expect(c.update(parent: a)).to be true
+        end
+      end
     end
 
-    describe "SuperAuth::Deprecator, the stand-in without ActiveSupport" do
-      it "prints the message to stderr as a DEPRECATION WARNING" do
-        expect(capture_stderr { SuperAuth::Deprecator.new.warn("gone soon") }).to include("DEPRECATION WARNING: gone soon\n")
+    describe "assert_acyclic!" do
+      it "passes a forest and names every node no root reaches, on a raw cycle" do
+        root = SuperAuth::Resource.create(name: "root")
+        SuperAuth::Resource.create(name: "child", parent: root)
+        expect { SuperAuth::Resource.assert_acyclic! }.not_to raise_error
+
+        a = SuperAuth::Resource.create(name: "a")
+        b = SuperAuth::Resource.create(name: "b", parent: a)
+        hanging = SuperAuth::Resource.create(name: "hanging", parent: b)
+        close_cycle(:super_auth_resources, a.id, b.id)
+
+        expect { SuperAuth::Resource.assert_acyclic! }.to raise_error(
+          SuperAuth::Error,
+          "super_auth_resources has a parent_id cycle: node(s) #{[a.id, b.id, hanging.id].sort.join(', ')} cannot be reached from any root. " \
+          "Point one of them at a root, or at no parent, and recompile."
+        )
+        expect { SuperAuth::Group.assert_acyclic! }.not_to raise_error
+        expect { SuperAuth::Role.assert_acyclic! }.not_to raise_error
       end
 
-      it "prints nothing when silenced" do
-        deprecator = SuperAuth::Deprecator.new
-        deprecator.silenced = true
+      it "makes both compile! twins refuse a cycle in any tree table, before the delete" do
+        container, _a, _b = container_with_records
+        SuperAuth::Edge.create(user: user, resource: container)
+        expect(SuperAuth::Authorization.compile!).to eq 3
 
-        expect(capture_stderr { deprecator.warn("gone soon") }).not_to include("DEPRECATION WARNING")
+        {
+          SuperAuth::Group => :super_auth_groups, SuperAuth::Role => :super_auth_roles, SuperAuth::Resource => :super_auth_resources,
+        }.each do |model, table|
+          a = model.create(name: "a")
+          b = model.create(name: "b", parent: a)
+          close_cycle(table, a.id, b.id)
+
+          expect { SuperAuth::Authorization.compile! }.to raise_error(SuperAuth::Error, /#{table} has a parent_id cycle: node\(s\) #{a.id}, #{b.id}/)
+          expect { SuperAuth::ActiveRecord::Authorization.compile! }.to raise_error(SuperAuth::Error, /#{table} has a parent_id cycle/)
+          expect(db[:super_auth_authorizations].count).to eq 3
+          db[table].where(id: a.id).update(parent_id: nil)
+        end
+        expect(SuperAuth::Authorization.compile!).to eq 3
       end
+    end
+  end
+
+  describe "destroying a node" do
+    # A node's compiled rows and edges go with it, in the same transaction;
+    # everything else compiled waits for the next compile, like any other
+    # revocation. Children are not touched.
+    def compile_container_graph
+      container, a, b = container_with_records
+      other = SuperAuth::User.create(name: "other")
+      SuperAuth::Edge.create(user: user, resource: container)
+      SuperAuth::Edge.create(user: other, resource: a)
+      expect(SuperAuth::Authorization.compile!).to eq 4
+      [container, a, b, other]
+    end
+
+    it "purges the resource's compiled rows and edges" do
+      _container, a, b, other = compile_container_graph
+
+      a.destroy
+      expect(db[:super_auth_resources].select_map(:id)).not_to include(a.id)
+      expect(db[:super_auth_edges].where(resource_id: a.id).count).to eq 0
+      expect(db[:super_auth_authorizations].where(resource_id: a.id).count).to eq 0
+      expect(db[:super_auth_authorizations].count).to eq 2
+      expect(db[:super_auth_edges].count).to eq 1
+      expect(SuperAuth::Resource[b.id]).not_to be_nil
+      expect(SuperAuth::User[other.id]).not_to be_nil
+    end
+
+    it "purges a group's and a role's compiled rows and edges" do
+      group = SuperAuth::Group.create(name: "staff")
+      role = SuperAuth::Role.create(name: "editor")
+      permission = SuperAuth::Permission.create(name: "read")
+      res = SuperAuth::Resource.create(name: "doc")
+      SuperAuth::Edge.create(user: user, group: group)
+      SuperAuth::Edge.create(group: group, role: role)
+      SuperAuth::Edge.create(user: user, role: role)
+      SuperAuth::Edge.create(role: role, permission: permission)
+      SuperAuth::Edge.create(permission: permission, resource: res)
+      direct = SuperAuth::Edge.create(user: user, resource: res)
+      expect(SuperAuth::Authorization.compile!).to eq 3
+
+      group.destroy
+      expect(db[:super_auth_authorizations].where(group_id: group.id).count).to eq 0
+      expect(db[:super_auth_authorizations].count).to eq 2
+      expect(db[:super_auth_edges].where(group_id: group.id).count).to eq 0
+
+      role.destroy
+      expect(db[:super_auth_authorizations].where(role_id: role.id).count).to eq 0
+      expect(db[:super_auth_authorizations].select_map(:resource_id)).to eq [res.id]
+      expect(db[:super_auth_edges].select_map(:id)).to match_array [direct.id, db[:super_auth_edges].first(permission_id: permission.id, resource_id: res.id)[:id]]
+    end
+
+    it "(ActiveRecord) purges the same way from each twin" do
+      _container, a, _b, _other = compile_container_graph
+      group = SuperAuth::ActiveRecord::Group.create!(name: "staff")
+      role = SuperAuth::ActiveRecord::Role.create!(name: "editor")
+      permission = SuperAuth::ActiveRecord::Permission.create!(name: "read")
+      SuperAuth::ActiveRecord::Edge.create!(user_id: user.id, group_id: group.id)
+      SuperAuth::ActiveRecord::Edge.create!(user_id: user.id, role_id: role.id)
+      SuperAuth::ActiveRecord::Edge.create!(group_id: group.id, permission_id: permission.id)
+      SuperAuth::ActiveRecord::Edge.create!(role_id: role.id, permission_id: permission.id)
+      SuperAuth::ActiveRecord::Edge.create!(permission_id: permission.id, resource_id: a.id)
+      expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq 6
+
+      SuperAuth::ActiveRecord::Resource.find(a.id).destroy!
+      expect(db[:super_auth_authorizations].where(resource_id: a.id).count).to eq 0
+      expect(db[:super_auth_edges].where(resource_id: a.id).count).to eq 0
+      expect(db[:super_auth_authorizations].count).to eq 2
+
+      SuperAuth::ActiveRecord::Group.find(group.id).destroy!
+      SuperAuth::ActiveRecord::Role.find(role.id).destroy!
+      expect(db[:super_auth_edges].where(group_id: group.id).or(role_id: role.id).count).to eq 0
+      expect(db[:super_auth_edges].count).to eq 1
+      expect(db[:super_auth_authorizations].count).to eq 2
     end
   end
 

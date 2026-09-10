@@ -41,18 +41,19 @@ RSpec.describe SuperAuth do
     SuperAuth::ActiveRecord::Resource.update_all(parent_id: nil)
     SuperAuth::ActiveRecord::Resource.delete_all
 
-    # Create tables with database-appropriate auto-increment syntax
+    # Create tables with database-appropriate auto-increment syntax. documents
+    # carries a parent column of the external id type; mistyped_documents
+    # carries one of the wrong type, for the preflight.
+    pk =
     case SuperAuth.db.database_type
-    when :mysql, :mysql2
-      SuperAuth.db.run "create table if not exists resources (id integer primary key auto_increment, name varchar(255))"
-      SuperAuth.db.run "create table if not exists external_users (id integer primary key auto_increment, name varchar(255))"
-    when :postgres
-      SuperAuth.db.run "create table if not exists resources (id serial primary key, name varchar(255))"
-      SuperAuth.db.run "create table if not exists external_users (id serial primary key, name varchar(255))"
-    else # SQLite
-      SuperAuth.db.run "create table if not exists resources (id integer primary key, name varchar(255))"
-      SuperAuth.db.run "create table if not exists external_users (id integer primary key, name varchar(255))"
+    when :mysql, :mysql2 then "integer primary key auto_increment"
+    when :postgres then "serial primary key"
+    else "integer primary key" # SQLite
     end
+    SuperAuth.db.run "create table if not exists resources (id #{pk}, name varchar(255))"
+    SuperAuth.db.run "create table if not exists external_users (id #{pk}, name varchar(255))"
+    SuperAuth.db.run "create table if not exists documents (id #{pk}, name varchar(255), organization_id bigint)"
+    SuperAuth.db.run "create table if not exists mistyped_documents (id #{pk}, name varchar(255), organization_id varchar(255))"
 
     # SuperAuth::ActiveRecord::User.itself # Loads if it it hasn't been loaded yet. TODO: Make this the normal ApplicationRecord rails style
 
@@ -432,6 +433,304 @@ RSpec.describe SuperAuth do
       SuperAuth.current_user = @bob
       expect(resource_class.all.map(&:id)).to eq [@record_b.id]
       expect(resource_class.where(id: @record_a.id)).to be_empty
+    end
+  end
+
+  context "parent-record grants" do
+    # A document's tenancy is its organization_id. A grant on an organization
+    # tier admits every document whose column names that organization; a
+    # per-record grant on the document admits it whatever the column holds.
+    def capture_sql
+      statements = []
+      callback = ->(_name, _started, _finished, _id, payload) do
+        statements << payload[:sql] unless %w[SCHEMA TRANSACTION].include?(payload[:name])
+      end
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { yield }
+      statements
+    end
+
+    def quoted(table, column)
+      connection = ActiveRecord::Base.connection
+      "#{connection.quote_table_name(table)}.#{connection.quote_column_name(column)}"
+    end
+
+    def grant(type, id)
+      SuperAuth::ActiveRecord::Authorization.create!(
+        user_id: SuperAuth.current_user.id, resource_external_type: type, resource_external_id: id
+      )
+    end
+
+    let(:document_class) do
+      Class.new(ActiveRecord::Base) do
+        self.table_name = :documents
+        def self.name = "Document"
+        super_auth parent: { column: :organization_id, resource_type: %w[Organization::Member Organization::Admin] }
+      end
+    end
+
+    before do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.create(name: "member")
+      document_class.unscoped.delete_all
+      @org1_doc = document_class.create!(name: "org1", organization_id: 1)
+      @org2_doc = document_class.create!(name: "org2", organization_id: 2)
+      @orphan = document_class.create!(name: "orphan", organization_id: nil)
+    end
+
+    it "stores the normalised reach on one default scope" do
+      expect(document_class.super_auth_reach).to eq(id: ["Document"], organization_id: ["Organization::Member", "Organization::Admin"])
+      expect(document_class.super_auth_reach).to be_frozen
+      expect(document_class.super_auth_wildcard).to be true
+      expect(document_class.default_scopes.size).to eq 1
+    end
+
+    it "refuses a malformed parent at declaration" do
+      expect do
+        Class.new(ActiveRecord::Base) do
+          self.table_name = :documents
+          def self.name = "Document"
+          super_auth parent: { column: :id, resource_type: "Document" }
+        end
+      end.to raise_error(SuperAuth::Error, /column: :id is the per-record step/)
+    end
+
+    it "admits records through the parent column" do
+      grant("Organization::Member", 1)
+
+      expect(document_class.all.map(&:id)).to eq [@org1_doc.id]
+      expect { document_class.find(@org2_doc.id) }.to raise_error(ActiveRecord::RecordNotFound)
+    end
+
+    it "admits a per-record grant on a row whose parent column is NULL" do
+      grant("Document", @orphan.id)
+
+      expect(document_class.all.map(&:id)).to eq [@orphan.id]
+    end
+
+    it "admits through any type in the parent list" do
+      grant("Organization::Admin", 1)
+
+      expect(document_class.all.map(&:id)).to eq [@org1_doc.id]
+    end
+
+    # A type-level row on the parent type has a NULL id, and NULL equals no
+    # column value: it is not a grant on every document of every organization.
+    it "reaches nothing through a type-level row on the parent type" do
+      grant("Organization::Member", nil)
+
+      expect(document_class.all.to_a).to be_empty
+    end
+
+    it "keeps the type-level step on the class's own type" do
+      grant("Document", nil)
+
+      expect(document_class.all.map(&:id)).to match_array [@org1_doc.id, @org2_doc.id, @orphan.id]
+    end
+
+    it "lets the system user through" do
+      SuperAuth.current_user = SuperAuth::ActiveRecord::User.system
+
+      expect(document_class.count).to eq 3
+    end
+
+    it "keeps missing_user_behavior" do
+      SuperAuth.current_user = nil
+      expect(document_class.all.to_a).to eq []
+
+      SuperAuth.missing_user_behavior = :raise
+      expect { document_class.all.to_a }.to raise_error(SuperAuth::Error, "SuperAuth.current_user not set")
+    ensure
+      SuperAuth.missing_user_behavior = :none
+    end
+
+    it "loads a record in one statement holding both IN-subqueries, with no per-row query" do
+      grant("Organization::Member", 1)
+      grant("Document", @orphan.id)
+
+      sql = document_class.where(id: @org1_doc.id).to_sql
+      expect(sql).to include("#{quoted(:documents, :id)} IN (SELECT #{quoted(:super_auth_authorizations, :resource_external_id)} FROM")
+      expect(sql).to include("#{quoted(:documents, :organization_id)} IN (SELECT #{quoted(:super_auth_authorizations, :resource_external_id)} FROM")
+      expect(sql).to include("'Organization::Member', 'Organization::Admin'")
+      expect(sql.scan("IN (SELECT").size).to eq 2
+      expect(sql.scan("IS NOT NULL").size).to eq 2
+
+      # The type-level probe and the load itself, however many rows come back.
+      expect(capture_sql { document_class.find(@org1_doc.id) }.grep(/super_auth_authorizations/).size).to eq 2
+      expect(capture_sql { document_class.all.to_a }.grep(/super_auth_authorizations/).size).to eq 2
+      expect(document_class.all.map(&:id)).to match_array [@org1_doc.id, @orphan.id]
+    end
+
+    it "carries the OR into an instance's update, reload and destroy" do
+      grant("Organization::Member", 1)
+
+      statements = capture_sql do
+        @org1_doc.update!(name: "renamed")
+        @org1_doc.reload
+        @org1_doc.destroy
+      end
+      %w[UPDATE SELECT DELETE].each do |verb|
+        statement = statements.grep(/\A#{verb} .*#{Regexp.escape(quoted(:documents, :id))}/).first
+        expect(statement).to include("#{quoted(:documents, :id)} IN (SELECT")
+        expect(statement).to include("#{quoted(:documents, :organization_id)} IN (SELECT")
+      end
+      expect(document_class.unscoped.where(id: @org1_doc.id)).to be_empty
+    end
+
+    it "leaves a row the user does not reach untouched by instance writes" do
+      grant("Organization::Member", 1)
+
+      expect { @org2_doc.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      @org2_doc.update!(name: "renamed")
+      @org2_doc.destroy
+      expect(document_class.unscoped.find(@org2_doc.id).name).to eq "org2"
+    end
+
+    context "subclasses" do
+      let(:writable_class) do
+        Class.new(document_class) do
+          def self.name = "Document::Writable"
+        end
+      end
+
+      let(:case_writer_class) do
+        Class.new(document_class) do
+          def self.name = "Document::Writable"
+          super_auth parent: { column: :organization_id, resource_type: "Organization::CaseWriter" }
+        end
+      end
+
+      it "is keyed on its own name and inherits the parents" do
+        grant("Organization::Member", 1)
+        grant("Document", @orphan.id)
+
+        expect(writable_class.super_auth_effective_reach).to eq(id: ["Document::Writable"], organization_id: ["Organization::Member", "Organization::Admin"])
+        expect(writable_class.all.map(&:id)).to eq [@org1_doc.id]
+
+        grant("Document::Writable", @orphan.id)
+        expect(writable_class.all.map(&:id)).to match_array [@org1_doc.id, @orphan.id]
+        expect(document_class.all.map(&:id)).to match_array [@org1_doc.id, @orphan.id]
+      end
+
+      it "re-declares its own parents without touching the base's or adding a scope" do
+        expect(case_writer_class.super_auth_reach).to eq(id: ["Document::Writable"], organization_id: ["Organization::CaseWriter"])
+        expect(document_class.super_auth_reach).to eq(id: ["Document"], organization_id: ["Organization::Member", "Organization::Admin"])
+        expect(case_writer_class.default_scopes.size).to eq 1
+        expect(document_class.default_scopes.size).to eq 1
+
+        grant("Organization::Member", 1)
+        expect(document_class.all.map(&:id)).to eq [@org1_doc.id]
+        expect(case_writer_class.all.to_a).to be_empty
+
+        grant("Organization::CaseWriter", 1)
+        expect(case_writer_class.all.map(&:id)).to eq [@org1_doc.id]
+      end
+
+      it "explains through its own name" do
+        grant("Document", @org1_doc.id)
+        grant("Organization::CaseWriter", 1)
+
+        expect(case_writer_class.super_auth_explain(@org1_doc).map { |row| row[:step] }).to eq [:organization_id]
+        grant("Document::Writable", @org1_doc.id)
+        expect(case_writer_class.super_auth_explain(@org1_doc).map { |row| row[:step] }).to eq [:id, :organization_id]
+      end
+    end
+
+    context "wildcard: false" do
+      let(:document_class) do
+        Class.new(ActiveRecord::Base) do
+          self.table_name = :documents
+          def self.name = "Document"
+          super_auth parent: { column: :organization_id, resource_type: "Organization::Member" }, wildcard: false
+        end
+      end
+
+      it "drops the type-level step" do
+        grant("Document", nil)
+        grant("Organization::Member", 1)
+
+        expect(document_class.super_auth_wildcard).to be false
+        expect(capture_sql { document_class.all.to_a }.grep(/super_auth_authorizations/).size).to eq 1
+        expect(document_class.all.map(&:id)).to eq [@org1_doc.id]
+        expect(document_class.super_auth_explain(@org1_doc).map { |row| row[:step] }).to eq [:organization_id]
+      end
+    end
+
+    context "preflight" do
+      let(:missing_column_class) do
+        Class.new(ActiveRecord::Base) do
+          self.table_name = :documents
+          def self.name = "Document"
+          super_auth parent: { column: :folder_id, resource_type: "Folder" }
+        end
+      end
+
+      let(:mistyped_class) do
+        Class.new(ActiveRecord::Base) do
+          self.table_name = :mistyped_documents
+          def self.name = "MistypedDocument"
+          super_auth parent: { column: :organization_id, resource_type: "Organization::Member" }
+        end
+      end
+
+      it "reads no schema at declaration, so a process boots before its migrations" do
+        expect(capture_sql { missing_column_class }).to be_empty
+      end
+
+      it "refuses a parent column the table does not have" do
+        expect { missing_column_class.all.to_a }
+          .to raise_error(SuperAuth::Error, "Document declares parent column folder_id, which table documents does not have")
+      end
+
+      it "refuses a parent column outside the external id type family" do
+        expect { mistyped_class.all.to_a }.to raise_error(
+          SuperAuth::Error,
+          /\AMistypedDocument\.organization_id is (varchar|character varying)\(255\) but super_auth_authorizations\.resource_external_id is bigint/
+        )
+      end
+
+      it "runs ahead of the type-level probe and not for the system user" do
+        grant("MistypedDocument", nil)
+        expect { mistyped_class.all.to_a }.to raise_error(SuperAuth::Error, /organization_id/)
+
+        SuperAuth.current_user = SuperAuth::ActiveRecord::User.system
+        expect(mistyped_class.count).to eq 0
+      end
+    end
+
+    describe ".super_auth_explain" do
+      it "tags each compiled row admitting the record with its step" do
+        grant("Document", nil)
+        grant("Document", @org1_doc.id)
+        grant("Organization::Member", 1)
+        grant("Organization::Admin", 2)
+
+        rows = document_class.super_auth_explain(@org1_doc)
+        expect(rows.map { |row| row[:step] }).to eq [:type_level, :id, :organization_id]
+        expect(rows.map { |row| row.values_at(:resource_external_type, :resource_external_id) })
+          .to eq [["Document", nil], ["Document", @org1_doc.id], ["Organization::Member", 1]]
+        expect(rows.first.keys).to include(:step, :user_id, :resource_external_type, :resource_external_id)
+
+        expect(document_class.super_auth_explain(@org2_doc.id).map { |row| row[:step] }).to eq [:type_level, :organization_id]
+        expect(document_class.super_auth_explain(@orphan.id).map { |row| row[:step] }).to eq [:type_level]
+      end
+
+      it "answers for a row the user cannot see" do
+        grant("Organization::Member", 1)
+
+        expect(document_class.super_auth_explain(@org2_doc.id)).to eq []
+        expect { document_class.super_auth_explain(-1) }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+
+      it "reports the system bypass and the missing user" do
+        SuperAuth.current_user = SuperAuth::ActiveRecord::User.system
+        expect(document_class.super_auth_explain(@org1_doc)).to eq [{ step: :system }]
+
+        SuperAuth.current_user = nil
+        expect(document_class.super_auth_explain(@org1_doc)).to eq []
+        SuperAuth.missing_user_behavior = :raise
+        expect { document_class.super_auth_explain(@org1_doc) }.to raise_error(SuperAuth::Error, "SuperAuth.current_user not set")
+      ensure
+        SuperAuth.missing_user_behavior = :none
+      end
     end
   end
 end

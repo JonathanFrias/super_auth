@@ -85,13 +85,20 @@ the editor only creates edges of the eight kinds the path strategies read.
 ## Postgres Row-Level Security (optional)
 
 The `ByCurrentUser` scope enforces authorization at the ORM layer. On Postgres you can
-additionally enforce the same rules inside the database itself, so raw SQL, `unscoped`,
-background jobs, and any other client on the same database are subject to them too —
+additionally enforce the same reach inside the database itself, so raw SQL, `unscoped`,
+background jobs, and any other client on the same database are subject to it too —
 unauthorized rows become invisible at the connection level. Enforcement is pure SQL:
 participating apps don't load this gem, or Ruby, at all. The gem's role is
 administrative — define the graph, compile authorizations, enable the policies — which
 is what makes super_auth usable as a central authorization service for apps in any
 language.
+
+What the database enforces is *tenancy*, not capability. Authorization protection will
+always be a combination of the language client ORM plus the super_auth database. The
+RLS is just a portable way to start the transition to cover new languages and provide
+some base authorization support to future apps. The policy decides which rows an
+identity may touch at all; which of those it may write is the application's decision,
+in code, in every language that writes.
 
 ### The contract (any language)
 
@@ -133,11 +140,141 @@ Misuse fails closed, and the scheme works unchanged behind transaction-pooling p
 like pgbouncer, because a transaction is exactly what they keep on one server
 connection.
 
+#### What the policy admits
+
+Every protected table carries one policy, `super_auth`, `FOR ALL`. Its `USING` is the
+transaction stamp AND (system context OR one step per entry of the table's *reach*):
+the columns through which a compiled authorization reaches a row, each with the types
+whose rows admit through it. The reach is declared once, when the policy is enabled,
+and the ORM scope reads the same declaration (see [Permission-Gated Models](#permission-gated-models)):
+
+```ruby
+SuperAuth::RLS.enable(:claims,
+  resource_type: "Claim",
+  parent: { column: :organization_id, resource_type: ["Organization::Member", "Organization::Admin"] })
+# reach: { id: ["Claim"], organization_id: ["Organization::Member", "Organization::Admin"] }
+```
+
+installs this, verbatim except that `<holder>` is spelled out below:
+
+```sql
+CREATE POLICY super_auth ON "claims"
+USING (
+  current_setting('super_auth.xid', true) = pg_current_xact_id()::text
+  AND (
+    COALESCE(current_setting('super_auth.system', true), '') = 'true'
+    OR EXISTS (SELECT 1 FROM super_auth_authorizations a
+               WHERE a.resource_external_type IN ('Claim') AND a.resource_external_id IS NULL AND <holder>)
+    OR "claims"."id" IN (SELECT a.resource_external_id FROM super_auth_authorizations a
+               WHERE a.resource_external_type IN ('Claim') AND a.resource_external_id IS NOT NULL AND <holder>)
+    OR "claims"."organization_id" IN (SELECT a.resource_external_id FROM super_auth_authorizations a
+               WHERE a.resource_external_type IN ('Organization::Member', 'Organization::Admin')
+                 AND a.resource_external_id IS NOT NULL AND <holder>)
+  )
+)
+```
+
+Each subquery is written out as the `UNION ALL` of its two `<holder>` halves —
+`a.user_id::text = NULLIF(current_setting('super_auth.user_id', true), '')` for a user
+managed inside super_auth, and `a.user_external_id::text =
+NULLIF(current_setting('super_auth.user_external_id', true), '') AND a.user_external_type =
+NULLIF(current_setting('super_auth.user_external_type', true), '')` for an application
+user — so each half can walk `idx_sa_auth_by_current_user`. Three kinds of step, in
+this order:
+
+- **Type-level.** A compiled row for one of the table's own types with
+  `resource_external_id` NULL admits every row of the table, present and future. A
+  supported, permanent primitive — "this principal may act on every record of this
+  type" has no cheaper spelling — and it is always emitted unless `enable` is given
+  `wildcard: false`, an explicit opt-out for a table whose types are never granted
+  type-level; a `(type, NULL)` row then admits nothing there.
+- **Per record** (`id`). The row's own id is among the ids the holder's rows for the
+  table's own types name.
+- **Parent** (one per `parent:` column, in the order declared). The value in the
+  column is among the ids the holder's rows for the column's types name: the row's
+  tenancy, read off the row itself, so there is no node per row and nothing to
+  recompile when a row is created or moves.
+
+Nothing in the expression is correlated with the outer row, so Postgres evaluates each
+step once per query — an InitPlan and hashed SubPlans — instead of once per row: 2.6 ms
+on 8,007 claims against a holder with thousands of rows, where a per-row form is
+seconds. `INSERT` and `UPDATE` are gated by the same expression: the policy has no
+`WITH CHECK`, so Postgres reuses `USING` for the new row, and a create is admitted by a
+type-level grant on the table's type, by a parent grant for the value the new row
+carries in a parent column, or by system context.
+
+The reach and a policy version are recorded as JSON in the policy's comment —
+`{"super_auth":2,"reach":{"id":["Claim"],"organization_id":["Organization::Member","Organization::Admin"]},"wildcard":true}`
+— which any client can read back with `obj_description(oid, 'pg_policy')`; the Ruby
+readers are under [Keeping the policy current](#keeping-the-policy-current).
+
+#### What the policy does not decide
+
+1. **Tenancy, not capability.** The policy is the tenancy boundary: organization A
+   never reads organization B's rows, enforced on the row's own column. Which of the
+   admitted tenants may write — viewer against writer inside one organization — is the
+   application's, in code. The policy is `FOR ALL` and gates no verb: a holder of a read
+   tier passes it for `UPDATE` and `DELETE` at the database. `DELETE` in particular is
+   gated by `USING` alone, so a read-tier holder's unfiltered `DELETE` removes every row
+   of their tenancy and reports 0 rows for everything else, without an error. Known,
+   accepted, and by design: RLS is the portable base, not the whole of authorization.
+2. **A parent type must be a capability type nobody else is granted.** Key the column on
+   `Organization::Member`, never on bare `Organization`: a per-record `Organization` node
+   is what a grant of *any* kind on the organization reaches, and it would admit every
+   claim to whoever holds it for whatever reason. Names do not say which kind a type is.
+   `Claim::Admin` is platform-only — force a status, wipe review data, actions even the
+   claim's owner may not take — granted type-level to the admin tier and per record to
+   nobody, and it declares **no parent, ever**; `Organization::Admin` is a per-organization
+   capability node organization admins are supposed to hold, and a legitimate parent
+   type. Same suffix, opposite meanings: pairing `Claim::Admin` with `Organization::Admin`
+   "for symmetry" would let every organization admin force status on their own
+   organization's claims. The Ruby side by side is under
+   [Permission-Gated Models](#permission-gated-models).
+3. **Every column lists every tier's parent type**, because the policy must never be
+   narrower than any tier's ORM scope over the same table. `Claim` keyed on
+   `Organization::Member` for readers and `Claim::Writable` on `Organization::CaseWriter`
+   in the ORM means the policy lists both under `organization_id` — a holder of one
+   without the other exists — or the ORM shows a row the database hides, which fails
+   closed and reads as a permissions bug. The gem cannot check this: the policy sees no
+   Ruby classes. It is yours.
+4. **Parents do not chain.** A grant on the organization reaches a claim through
+   `claims.organization_id` and stops. A medium that belongs to a claim is reached
+   through a column of its own on `media`, declared on `media`, not through `claims`.
+5. **No row can be created through ActiveRecord that its creator cannot immediately
+   read.** ActiveRecord always emits `INSERT ... RETURNING` on Postgres, and the returned
+   row must pass `USING`. A `WITH CHECK` could only narrow `USING`, never widen it. This is
+   why a node minted in `after_create_commit` can never authorize its own record's
+   `INSERT`: the row has to pass before the callback runs. What admits a create is listed
+   above; it is never "the node this create will make".
+6. **A create with no parent value cannot be authorized by the column step.** `col = NULL`
+   is never true. A row whose parent column is NULL is admitted by a type-level grant, a
+   per-record row, or system context, and a new row has no per-record row yet. The escape
+   hatch is system context around exactly that branch — `SuperAuth.as(SuperAuth::User.system) { ... }`,
+   or `SuperAuth::RLS.assert(system_user)` inside the transaction you already hold — never
+   SQL interpolated into a policy.
+7. **A per-record holder may set the parent column to any value.** `USING` is reused as
+   the check and a self-referencing check is not expressible, so a holder admitted by the
+   row's own id may move it to an organization they do not hold; the client gates that
+   column on write. Note the failure direction: with per-record nodes a wrong grant fails
+   closed, with a tenancy column a wrong *value in the column* fails **open** — guard
+   writes to it.
+8. **The compiled table alone no longer answers "who can see X".** A row is admitted by a
+   compiled row naming a *different* record, so the answer is a join through the
+   protected table: `SuperAuth::RLS.explain(:claims, id)` for any client (it reads the
+   comment, needs no model), `Claim.super_auth_explain(id)` in Ruby.
+9. **A type-level row on a parent type admits nothing.** `(Organization::Member, NULL)` is
+   not "every organization's claims": a column holds an id, and NULL equals none. Grant
+   the table's own type type-level for that.
+10. **`pg_current_xact_id()` cannot run on a hot standby** (pre-existing, unchanged): the
+    stamp assigns a transaction id, which a read replica cannot do, so neither the
+    assertion nor a protected query runs there.
+
 ### Setup (Rails)
 
 **1. Match column types to your primary keys — before your first migration.**
 The policies compare `super_auth_authorizations.resource_external_id` directly
-against your tables' pks with no casting, so the columns must share a type:
+against your tables' pks, and against every parent column, with no casting, so the
+columns must share a type:
 
 ```ruby
 # config/initializers/super_auth.rb
@@ -149,19 +286,35 @@ end
 If super_auth is already migrated with the wrong type, alter the four external id
 columns (`super_auth_users.external_id`, `super_auth_resources.external_id`,
 `super_auth_authorizations.user_external_id`, `super_auth_authorizations.resource_external_id`)
-in a migration of your own.
+in a migration of your own. `enable` checks, before any DDL, that every column the
+policy will compare exists and shares the type family (both integer types, or both text
+types), and names the table, the column, both types and this setting when one does not.
 
 **2. Enable RLS on the tables you want protected:**
 
 ```bash
-rails generate super_auth:rls Document Invoice
+rails generate super_auth:rls Claim Invoice
 rails db:migrate
 ```
 
-This creates one migration calling `SuperAuth::RLS.enable(:documents, resource_type: "Document")`
-per model — you can also call that directly for tables outside Rails. `resource_type`
-must match the `resource_external_type` used in your authorization rows (the model's
-class name when you use the AR integration).
+This creates one migration calling `enable` per model, each followed by a commented
+`parent:` line to fill in where the table carries a tenancy column:
+
+```ruby
+SuperAuth::RLS.enable(:claims, resource_type: "Claim")
+# Tenancy, not capability: a parent grant admits every row whose column holds a granted record's id, so list every type that may touch the row at all and let the ORM decide who writes.
+#   parent: { column: :organization_id, resource_type: ["Organization::Member"] }
+```
+
+You can also call `enable` directly for tables outside Rails. `resource_type` must match
+the `resource_external_type` used in your authorization rows (the model's class name when
+you use the AR integration, one entry per class that scopes the table); `parent:` is a
+`{ column:, resource_type: }` Hash or an Array of them, the same shape the model's
+`super_auth parent:` takes. The DDL runs in one transaction under `lock_timeout:` (default
+`"5s"`) — `DROP` and `CREATE POLICY` take `ACCESS EXCLUSIVE`, and separately they left a
+window with no policy on a live table — and joins the migration's transaction when there
+is one. `enable` is idempotent and re-runnable on a protected table, which is how a
+policy is changed.
 
 **3. Connect as a role RLS applies to.** Superusers and `BYPASSRLS` roles skip
 policies entirely, so the app must not connect as one (owning the tables is fine —
@@ -173,7 +326,7 @@ nothing else:
 
 ```sql
 CREATE ROLE app_runtime LOGIN PASSWORD '...';
-GRANT SELECT, INSERT, UPDATE, DELETE ON documents, invoices TO app_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON claims, invoices TO app_runtime;
 ```
 
 The right to bypass the policies is separate. Grant it, from a migration or a
@@ -218,32 +371,89 @@ the block to keep it. Where there is no block to wrap, a transaction you already
 manage or a change of user mid-request, `SuperAuth::RLS.assert(user)` asserts the
 identity in the current transaction and nothing else, and `SuperAuth::RLS.installed?`
 reports whether `enable` has run, so no application needs to know the SQL functions'
-signatures. Non-Ruby apps use the SQL contract directly. Each policy checks `super_auth_authorizations` with the same
-semantics as `ByCurrentUser`: type-level authorizations (`resource_external_id IS NULL`)
-act as a wildcard (deprecated, see CHANGELOG 0.8.0), per-record authorizations match
-on id. Any object with an `id`
+signatures. Non-Ruby apps use the SQL contract directly. Each policy checks
+`super_auth_authorizations` with the same semantics as `ByCurrentUser`: a type-level
+grant (`resource_external_id IS NULL`) admits every row of the type, a per-record row
+matches on id, a parent row matches on the declared column. Any object with an `id`
 works as the user, including SuperAuth's own user records. For a user whose `system?`
 is true, `SuperAuth.as` calls `super_auth_system()` instead, so the connection's role
 must have been given the bypass with `SuperAuth::RLS.grant_system`.
+
+### Keeping the policy current
+
+A gem upgrade changes nothing already in the database. The policy `enable` wrote stays
+exactly as written until `enable` runs again, so a release that changes the policy
+template — 0.9.0 did — or a model that gains a `parent:` needs `enable` re-run for that
+table, in a migration, with the arguments it should now carry. A parent grant is
+invisible to a policy that predates it: the holder sees nothing, fail closed, and it
+reads as a permissions bug.
+
+`enable` records `SuperAuth::RLS::POLICY_VERSION` and the reach in the policy's comment,
+never `ALTER`s a policy, and drops every name it has ever given one before creating
+`super_auth` (Postgres ORs permissive policies, so one left behind under an old name would
+keep admitting rows). Two readers:
+
+```ruby
+SuperAuth::RLS.stale                                   # => [:claims]  tables whose policy predates this gem
+SuperAuth::RLS.current?(:claims, resource_type: "Claim",
+  parent: { column: :organization_id, resource_type: ["Organization::Member", "Organization::Admin"] })
+# => true only if row security is enabled and forced, the comment matches these
+#    arguments exactly, and the expression is not the 0.8.0 shape
+SuperAuth::RLS.reach(:claims)                           # => { id: ["Claim"], organization_id: [...] }
+```
+
+Put `current?` in a test helper or a health check: it is what catches a deploy that
+changed `parent:` in the model and not in the database, and `RENAME COLUMN`, which
+rewrites the stored expression while the comment keeps the old column name. `installed?`
+is unchanged and means only that the identity functions exist.
+
+### Explaining and measuring reach
+
+```ruby
+SuperAuth.as(user) { SuperAuth::RLS.explain(:claims, claim.id) }
+# => [{ step: :organization_id, user_id: 1, resource_external_type: "Organization::Member",
+#       resource_external_id: 3, ... every column of the compiled row }]
+Claim.super_auth_explain(claim)          # the ORM twin, for SuperAuth.current_user
+# => [{ step: :type_level, ... }, { step: :id, ... }, { step: :organization_id, ... }]
+```
+
+`explain` returns the compiled rows that admit one record for the asserted identity,
+each tagged with the step that admitted it, in reach order; `[]` with no identity, under
+system context, for a missing record, or when nothing admits it. The ORM twin answers
+`[{ step: :system }]` for the system user and reads the row `unscoped`, since the
+question is usually asked about a row the user cannot see.
+
+`SuperAuth::RLS.coverage(:claims)` is the diagnostic for moving a table's tenancy from
+per-record rows to a parent column, or for checking a production dump before doing so.
+It refuses nothing. Five buckets, each an Array of `{ count:, ids: [up to 20] }` entries
+with only the non-zero ones present: `loss` (per holder of a type-level row on the table's
+type: the rows only that grant reaches — what deleting it takes away), `null_parent` (per
+parent column: rows with NULL in it, which no parent grant can reach), `orphaned_rows`
+(compiled rows whose node is gone or no longer names them, by type and whether type-level),
+`widening` (per holder of a parent-type row: rows the parent step admits that no per-record
+row did), `deletable_nodes` (per type: the per-record nodes no user->resource edge points
+at and no child sits under — the only ones a cleanup may delete, because access granted
+straight to a user has no other path). `ids` are the table's in the first, second and
+fourth and `super_auth_resources` ids in the other two. Both readers run in system
+context when the role may assert it and as the caller's own identity otherwise, and need
+`SELECT` on the table, `super_auth_resources` and `super_auth_edges`.
 
 ### Notes
 
 - Queries with no identity asserted see nothing, and writes are rejected — fail
   closed, by design. A client that has never heard of super_auth cannot accidentally
   reach protected rows.
-- Creating rows requires a type-level authorization for that resource type (or system
-  context): the policy is `FOR ALL` with no `WITH CHECK`, so Postgres reuses its
-  `USING` expression as the implicit `WITH CHECK` for INSERTs and UPDATEs. Type-level
-  nodes are deprecated (see CHANGELOG 0.8.0) but remain the only way to authorize
-  INSERT here until the parent-record grant planned for the next release; a resource
-  container does not replace one on a protected table, because a per-record row can
-  only match an id that already exists.
+- Creating rows needs a type-level grant on the table's type, a parent grant for the
+  value the new row carries in a parent column, or system context: the policy is
+  `FOR ALL` with no `WITH CHECK`, so Postgres reuses its `USING` expression for
+  INSERTs and UPDATEs, and a per-record row can only match an id that already exists. A
+  resource container does not replace either on a protected table, for the same reason.
 - The transaction stamp calls `pg_current_xact_id()`, which assigns a real transaction
   id even to read-only transactions — one extra xid per protected transaction.
   Negligible for almost everyone; revisit with a virtual-xid variant only if
   transaction id churn ever matters at extreme read volume.
 - One `external_id_type` covers the whole install, so every protected table across
-  every participating app needs the same pk type.
+  every participating app needs the same pk type, and every parent column that type.
 - Postgres 13+ only (`pg_current_xact_id`). On other databases `SuperAuth::RLS`
   raises, and the ORM scope remains the enforcement layer.
 
@@ -465,31 +675,93 @@ Grants are per class in both directions: a `"Resource"` grant does not unlock th
 
 The resource tree is containment, not inheritance. A row compiled through a container copies the descendant node's own `external_type`, so nesting does not weaken the rule above; what weakens it is the node's position. A `"Resource::ResourceRestartPermission"` node whose parent is the `"Resource"` node is a descendant of it and receives every grant drawn on `"Resource"`. Register capability nodes as siblings of their base-class nodes, or in a container beside them as above, never as their children.
 
-## Row-Level Security for permission-gated models
+### Tenancy from a column: `parent:`
 
-For defense in depth on Postgres (13+), enable a policy on the table. It is keyed by a single resource type — the base class's name — and enforces *row visibility* using the same [contract described above](#postgres-row-level-security-optional):
+A record that belongs to something — a claim to an organization, a document to a folder — can be reached through the column that says so, instead of through a node per record. `super_auth parent:` declares the column and the types whose rows admit through it, and the scope becomes one `IN`-subquery per step, OR'd: the row's own id against the class's own name, then each parent column against its types. The tiers are capability subclasses of the parent, exactly as above:
 
 ```ruby
-SuperAuth::RLS.enable(:resources, resource_type: "Resource")
+class Organization < ApplicationRecord
+  super_auth
+  # Per-organization capability nodes, registered as siblings of the
+  # Organization node, never under it (containment is not inheritance):
+  class Member < Organization; end        # every member holds one — the tenancy tier
+  class CaseWriter < Member; end          # members who may write
+  class Admin < CaseWriter; end           # organization admins; a legitimate parent type
+end
+
+class Claim < ApplicationRecord
+  # Readers: anyone the organization admits at all.
+  super_auth parent: { column: :organization_id,
+                       resource_type: ["Organization::Member", "Organization::CaseWriter", "Organization::Admin"] }
+
+  class Writable < Claim
+    # Writers: a narrower tier, on the same column. Re-declaring on a subclass
+    # replaces its parents alone; the per-record step stays keyed on "Claim::Writable".
+    super_auth parent: { column: :organization_id,
+                         resource_type: ["Organization::CaseWriter", "Organization::Admin"] }
+  end
+
+  class Admin < Writable
+    # Platform-only: force a status, wipe review data — actions even the
+    # claim's owner may not take. Granted type-level to the admin tier and
+    # per record to nobody, and it declares NO parent, ever. Pairing it with
+    # Organization::Admin "for symmetry" would hand every organization admin
+    # these actions on their own organization's claims.
+    super_auth
+  end
+end
 ```
 
-`enable` turns on `ROW LEVEL SECURITY` (with `FORCE`, so the table owner is covered too) and installs a policy that derives visibility from `super_auth_authorizations`. Identity is asserted **per transaction, not per connection**: wrap the work in `SuperAuth.as`, which opens a transaction and calls `super_auth_become` for you (see the contract above). Every query inside is filtered, and the identity dies with the transaction:
+`Claim::Admin` and `Organization::Admin` share a suffix and mean opposite things — one is the platform's, the other a per-organization node organization admins are supposed to hold — and a reader who has just learned that `Organization::Admin` is a parent type is one keystroke from the escalation. The rule the example follows: a parent type must be a capability type nobody else is granted (`Organization::Member`, never bare `Organization`, whose per-record node any grant on the organization reaches), and a subclass that exists to be *narrower* than the record's owner declares no parent.
+
+For one parent and internal user 1 the scope is, on Postgres and SQLite (MySQL backticks):
+
+```sql
+SELECT "claims".* FROM "claims"
+WHERE ("claims"."id" IN (SELECT "super_auth_authorizations"."resource_external_id" FROM "super_auth_authorizations"
+                          WHERE "super_auth_authorizations"."user_id" = 1
+                            AND "super_auth_authorizations"."resource_external_type" = 'Claim'
+                            AND "super_auth_authorizations"."resource_external_id" IS NOT NULL)
+   OR "claims"."organization_id" IN (SELECT "super_auth_authorizations"."resource_external_id" FROM "super_auth_authorizations"
+                          WHERE "super_auth_authorizations"."user_id" = 1
+                            AND "super_auth_authorizations"."resource_external_type" = 'Organization::Member'
+                            AND "super_auth_authorizations"."resource_external_id" IS NOT NULL))
+  AND "claims"."id" = 7
+```
+
+preceded by one probe for a type-level `Claim` row, which admits everything when found (`wildcard: false` on the macro drops the probe and the step). With a type list the parent step reads `IN ('Organization::Member', 'Organization::CaseWriter', 'Organization::Admin')`; an application user matches on `user_external_id` and `user_external_type`. Two statements per query, however many rows.
+
+Rules the scope keeps: the steps are OR'd and never collapsed into the parent step, so a per-record grant admits a row whose parent column is NULL, and a user with one read edge on one claim and no organization keeps it; a subclass inherits the parents and is keyed on its own name; re-declaring on a subclass replaces its parents only, on the one inherited default scope — never a second one, which would AND with the first and deny every row the parent step admits; a type-level row on a *parent* type admits nothing (NULL equals no id); a row the user is not admitted to is absent, so `update!` and `destroy` on it affect 0 rows without an error and `reload` raises `RecordNotFound`; parents do not chain. The parent column must exist with the type of `SuperAuth.external_id_type`, checked on the first scoped query rather than at declaration, so a process boots before its migrations run, and named when wrong: "Claim declares parent column organization_id, which table claims does not have", or "Claim.organization_id is character varying(255) but super_auth_authorizations.resource_external_id is bigint; a parent column must have the type of SuperAuth.external_id_type, the type of the ids it holds". `Claim.super_auth_explain(claim)` lists the compiled rows admitting one record for the current user, each tagged `:type_level`, `:id` or the column, and `[{ step: :system }]` for the system user.
+
+## Row-Level Security for permission-gated models
+
+For defense in depth on Postgres (13+), enable a policy on the table with the same declaration. The policy sees only the table, not which Ruby class issued the query, so it lists every class that scopes the table under `resource_type:` and every tier's parent type under the column — it must never be narrower than any tier's ORM scope, or the ORM shows a row the database hides:
+
+```ruby
+SuperAuth::RLS.enable(:claims,
+  resource_type: ["Claim", "Claim::Writable", "Claim::Admin"],
+  parent: { column: :organization_id,
+            resource_type: ["Organization::Member", "Organization::CaseWriter", "Organization::Admin"] })
+```
+
+`enable` turns on `ROW LEVEL SECURITY` (with `FORCE`, so the table owner is covered too) and installs the policy under the [contract described above](#the-contract-any-language), which derives visibility from `super_auth_authorizations`. Identity is asserted **per transaction, not per connection**: wrap the work in `SuperAuth.as`, which opens a transaction and calls `super_auth_become` for you. Every query inside is filtered, and the identity dies with the transaction:
 
 ```ruby
 SuperAuth.as(current_user) do
-  SuperAuth.db[:resources].all   # only rows current_user holds a grant on
+  SuperAuth.db[:claims].all   # only rows current_user reaches: per record, type-level, or through organization_id
 end
 # outside the block there is no asserted identity, so the policy matches nothing
 ```
 
-Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`); type-level wildcard grants (`resource_external_id IS NULL`, deprecated — see CHANGELOG 0.8.0) and the system user behave exactly as they do in the ActiveRecord scope. `SuperAuth::RLS.disable(:resources)` removes the policy.
+Works with `SuperAuth::User` records (matched by `user_id`) or your own user objects (matched by `user_external_id` / `user_external_type`); type-level grants (`resource_external_id IS NULL`) and the system user behave exactly as they do in the ActiveRecord scope. `SuperAuth::RLS.disable(:claims)` removes the policy.
 
-Because a policy sees only the table, not which Ruby class issued the query, row-level security enforces access to the **base** resource type: a `"Resource"` grant makes the row visible in the database, but the policy cannot distinguish the `"Resource::ResourceRestartPermission"` subclass. Per-class (capability) enforcement therefore stays with the ORM scope — the database is the row-visibility backstop, the client gates the capability.
+Because the policy cannot distinguish `Claim::Writable` from `Claim`, capability enforcement — who among the admitted may write — stays with the ORM scope, in every language that writes: the database is the tenancy boundary, the client gates the capability. A `Claim::Writable` per-record row admits its row at the database for every verb, and so does an `Organization::Member` row for every claim of the organization; the create guard and the `Writable` scope are what stop a viewer from writing, as they were before there was a policy.
 
 Notes:
 
 - With no `SuperAuth.as` assertion in effect, the policy matches nothing (deny by default) and writes are rejected — fail closed.
 - Postgres superusers and `BYPASSRLS` roles bypass row-level security entirely — run your application as a regular role (see the setup guide above).
+- After a gem upgrade or a change to `parent:`, re-run `enable`: a policy already in the database does not change on its own. `SuperAuth::RLS.stale` lists the tables behind and `current?` checks one (see [Keeping the policy current](#keeping-the-policy-current)).
 
 ## Development
 

@@ -66,6 +66,9 @@ RSpec.describe "Audit: row-level security" do
     SuperAuth.install_migrations
     SuperAuth.load
     SuperAuth.refresh_model_schemas
+    # Other spec files build a documents table of their own shape and may
+    # leave it behind; this one needs the shape below.
+    db.run "DROP TABLE IF EXISTS documents"
     db.run "CREATE TABLE documents (id serial PRIMARY KEY, name text)"
     # Privileges on the application table only; enable grants the rest.
     db.run "DO $$ BEGIN CREATE ROLE super_auth_rls_spec; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
@@ -142,11 +145,13 @@ RSpec.describe "Audit: row-level security" do
   end
 
   describe "C4: enable with external id columns that do not match the table's key", external_id_type: :string, skip_enable: true do
+    # Fixed 2026-09-09: enable checks every reach column against
+    # super_auth_authorizations.resource_external_id in pg_attribute before
+    # any DDL, and names both types and the setting. Kept as a tripwire.
     it "C4: raises a SuperAuth::Error that names external_id_type" do
-      pending "C4: CREATE POLICY fails with a raw Postgres error (integer = character varying) instead"
       expect {
         SuperAuth::RLS.enable(:documents, resource_type: "Document")
-      }.to raise_error(SuperAuth::Error, /external_id_type/)
+      }.to raise_error(SuperAuth::Error, /documents\.id is integer and super_auth_authorizations\.resource_external_id is text.*external_id_type is :string/)
     end
   end
 end

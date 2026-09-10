@@ -7,6 +7,19 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
   many_to_one :role
   many_to_one :resource
 
+  # The columns of `authorizations`, in its order. compile! inserts the union
+  # straight into super_auth_authorizations under this list, so it is the
+  # contract between the five SELECTs below and the table: MySQL and Postgres
+  # both need the column list, and the table has columns the union does not
+  # fill (its own timestamps, the ActiveRecord migration's id).
+  AUTHORIZATION_COLUMNS = %i[
+    user_id user_name user_external_id user_external_type user_created_at user_updated_at
+    group_id group_name group_path group_name_path group_parent_id group_created_at group_updated_at
+    role_id role_name role_path role_name_path role_parent_id role_created_at role_updated_at
+    permission_id permission_name permission_created_at permission_updated_at
+    resource_id resource_name resource_external_id resource_external_type
+  ].freeze
+
   class << self
     # The five strategies are UNIONed positionally. A column that is a real
     # text column in one strategy and CAST(NULL AS ...) in another must be cast
@@ -47,7 +60,10 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
     # per strategy — 27s per strategy on MySQL at 300k resources, 0.025s
     # anchored — so the walk is sized by the grants, not by the table. On a
     # flat graph it is the identity relation and the compiled rows are exactly
-    # what the previous pk join produced.
+    # what the previous pk join produced. The walk never descends from a
+    # type-level node (Resource.descend_from): a granted (type, NULL) node
+    # pairs with itself and nothing beneath it, on every path that reads this
+    # relation, compile! or not.
     def resource_subtrees
       granted = db[:super_auth_edges].exclude(resource_id: nil).select(:resource_id)
       SuperAuth::Resource.descendant_pairs(of: granted)
@@ -63,12 +79,15 @@ class SuperAuth::Edge < Sequel::Model(:super_auth_edges)
       ds.
         join(resource_subtrees.as(:resource_descendants), ancestor_id: resource_id_column).
         join(Sequel[:super_auth_resources], id: Sequel[:resource_descendants][:descendant_id]).
-        # A (type, NULL) row — a wildcard, every record of its type — is only
-        # ever the node the grant named, never one reached through the tree.
-        # Resource.assert_compilable! refuses that shape loudly, but it is a
-        # separate statement from this one: under READ COMMITTED a write that
-        # nests a wildcard can land between the two, and the compiled table
-        # must not widen a container grant to a whole type because of it.
+        # A (type, NULL) row — a type-level node, every record of its type —
+        # is only ever the node the grant named, never one reached through
+        # the tree; the walk itself refuses the other direction, a node
+        # reached through a type-level parent. Resource.assert_compilable!
+        # refuses both shapes loudly, but it is a separate statement from this
+        # one: under READ COMMITTED a write that nests a type-level node can
+        # land between the two, and the compiled table must not widen a
+        # container grant to a whole type, or a type-level grant to the nodes
+        # under it, because of it.
         where(
           Sequel.|(
             { Sequel[:resource_descendants][:ancestor_id] => Sequel[:resource_descendants][:descendant_id] },

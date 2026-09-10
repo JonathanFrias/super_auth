@@ -8,20 +8,24 @@ class SuperAuth::ActiveRecord::Authorization < ActiveRecord::Base
       from("(#{SuperAuth::Edge.authorizations.sql}) as super_auth_authorizations".squish)
     end
 
-    # Clears and repopulates the authorizations table from the current graph.
-    # The wildcard guard runs before the delete, so a refused compile leaves
-    # the previous rows in place; the deprecation notice follows the commit.
+    # Clears and repopulates the authorizations table from the current graph
+    # with one INSERT ... SELECT on this connection, and returns the row
+    # count; see SuperAuth::Authorization.compile!. The guards run before the
+    # delete, so a refused compile leaves the previous rows in place.
     def compile!
       transaction do
         # Sequel runs on this transaction's connection (sequel-activerecord_connection),
         # so the JIT switch lands in it; see SuperAuth::Authorization.compile!.
         SuperAuth.db.run "SET LOCAL jit = off" if SuperAuth.db.database_type == :postgres
-        SuperAuth::Resource.assert_compilable!
+        SuperAuth::Authorization.assert_compilable!
         delete_all
-        from_graph.each { |auth| create!(auth.attributes.except("id")) }
+        connection.execute(
+          SuperAuth.db[:super_auth_authorizations].insert_sql(
+            SuperAuth::Edge::AUTHORIZATION_COLUMNS, SuperAuth::Authorization.compile_source
+          )
+        )
+        count
       end
-      SuperAuth::Resource.warn_deprecated_wildcards
-      count
     end
   end
 end

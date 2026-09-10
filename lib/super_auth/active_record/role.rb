@@ -1,5 +1,8 @@
+require_relative "nested"
+
 class SuperAuth::ActiveRecord::Role < ActiveRecord::Base
   self.table_name = 'super_auth_roles'
+  include SuperAuth::ActiveRecord::Nested
 
   belongs_to :parent, class_name: 'SuperAuth::ActiveRecord::Role', optional: true
 

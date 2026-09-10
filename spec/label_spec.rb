@@ -70,7 +70,7 @@ RSpec.describe "resource labels" do
       expect(resource.reload.super_auth_label).to eq "Agent Orange presumptive"
     end
 
-    it "is a no-op on a type-level row, which has no record to name" do
+    it "is a no-op on a type-level grant, which has no record to name" do
       resource = SuperAuth::ActiveRecord::Resource.create!(name: "SuperAuthLabelSpecClaim")
 
       expect { resource.refresh_label! }.not_to change { resource.reload.super_auth_label }

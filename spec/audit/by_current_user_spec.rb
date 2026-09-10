@@ -192,18 +192,17 @@ RSpec.describe "Audit: ByCurrentUser and Authorization.compile!" do
       user
     end
 
-    it "B5: leaves the previous table intact when an insert fails part-way" do
+    # The delete and the INSERT ... SELECT share one transaction, so a source
+    # that fails after the delete rolls the delete back too (the Sequel twin
+    # is in spec/compile_spec.rb).
+    it "B5: leaves the previous table intact when the insert fails" do
       two_row_graph
       expect(SuperAuth::ActiveRecord::Authorization.compile!).to eq 2
 
-      calls = 0
-      allow(SuperAuth::ActiveRecord::Authorization).to receive(:create!).and_wrap_original do |original, *args|
-        calls += 1
-        raise "boom" if calls == 2
-        original.call(*args)
-      end
+      broken = db[:no_such_table].select(*SuperAuth::Edge::AUTHORIZATION_COLUMNS)
+      allow(SuperAuth::Authorization).to receive(:compile_source).and_return(broken)
 
-      expect { SuperAuth::ActiveRecord::Authorization.compile! }.to raise_error(RuntimeError, "boom")
+      expect { SuperAuth::ActiveRecord::Authorization.compile! }.to raise_error(ActiveRecord::StatementInvalid)
       expect(SuperAuth::ActiveRecord::Authorization.count).to eq 2
     end
 

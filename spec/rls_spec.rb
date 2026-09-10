@@ -58,12 +58,12 @@ RSpec.describe SuperAuth::RLS do
     end
   end
 
-  def grant(user_external_id: nil, user_external_type: nil, user_id: nil, resource_external_id: nil)
+  def grant(user_external_id: nil, user_external_type: nil, user_id: nil, resource_external_id: nil, resource_external_type: "Document")
     db[:super_auth_authorizations].insert(
       user_id: user_id,
       user_external_id: user_external_id,
       user_external_type: user_external_type,
-      resource_external_type: "Document",
+      resource_external_type: resource_external_type,
       resource_external_id: resource_external_id,
     )
   end
@@ -82,6 +82,9 @@ RSpec.describe SuperAuth::RLS do
     end
     SuperAuth.install_migrations
     SuperAuth.load
+    # Other spec files build a documents table of their own shape and may
+    # leave it behind; this one needs the shape below.
+    db.run "DROP TABLE IF EXISTS documents"
     db.run "CREATE TABLE documents (id serial PRIMARY KEY, name text)"
     # The roles get privileges on the application table only; everything
     # they need on the gem's own tables comes from enable.
@@ -749,6 +752,437 @@ RSpec.describe SuperAuth::RLS do
 
     it "is false on a non-Postgres database" do
       expect(described_class.installed?(db: Sequel.sqlite)).to be(false)
+    end
+  end
+
+  # What the catalogue holds for the documents table, read as the superuser.
+  def policy_rows
+    db.fetch(<<~SQL).all
+      SELECT p.polname AS name, obj_description(p.oid, 'pg_policy') AS comment, pg_get_expr(p.polqual, p.polrelid) AS qual
+      FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+      WHERE c.relname = 'documents' ORDER BY 1
+    SQL
+  end
+
+  def policy_qual
+    policy_rows.find { |row| row[:name] == "super_auth" }&.fetch(:qual)
+  end
+
+  def row_security
+    db.fetch("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'documents'").first
+  end
+
+  # The policy 0.8.0 wrote: one EXISTS correlated on `IS NULL OR = documents.id`.
+  def v1_policy_sql
+    <<~SQL
+      CREATE POLICY super_auth ON documents
+      USING (
+        current_setting('super_auth.xid', true) = pg_current_xact_id()::text
+        AND (
+          COALESCE(current_setting('super_auth.system', true), '') = 'true'
+          OR EXISTS (
+            SELECT 1 FROM super_auth_authorizations a
+            WHERE a.resource_external_type = 'Document'
+              AND (a.resource_external_id IS NULL OR a.resource_external_id = documents.id)
+              AND (
+                a.user_id::text = NULLIF(current_setting('super_auth.user_id', true), '')
+                OR (
+                  a.user_external_id::text = NULLIF(current_setting('super_auth.user_external_id', true), '')
+                  AND a.user_external_type = NULLIF(current_setting('super_auth.user_external_type', true), '')
+                )
+              )
+          )
+        )
+      )
+    SQL
+  end
+
+  # The preflight runs before any DDL, so a refused enable leaves the table
+  # exactly as it was.
+  describe "preflight" do
+    it "refuses a parent column the table lacks, naming the column and the external id type" do
+      described_class.disable(:documents)
+      expect {
+        described_class.enable(:documents, resource_type: "Document", parent: { column: :owner_id, resource_type: "Owner" })
+      }.to raise_error(SuperAuth::Error, /documents has no column owner_id.*resource_external_id is bigint.*external_id_type is :bigint/)
+      expect(row_security).to eq(relrowsecurity: false, relforcerowsecurity: false)
+    end
+
+    it "refuses a parent column outside the family of the external id type, naming both types" do
+      db.run "ALTER TABLE documents ADD COLUMN owner_uuid uuid"
+      expect {
+        described_class.enable(:documents, resource_type: "Document", parent: { column: :owner_uuid, resource_type: "Owner" })
+      }.to raise_error(SuperAuth::Error, /documents\.owner_uuid is uuid and super_auth_authorizations\.resource_external_id is bigint.*external_id_type is :bigint/)
+    end
+
+    it "refuses a table that does not exist" do
+      expect {
+        described_class.enable(:nowhere, resource_type: "Nowhere")
+      }.to raise_error(SuperAuth::Error, /table nowhere does not exist/)
+    end
+
+    it "refuses a wildcard: that is not true or false" do
+      expect {
+        described_class.enable(:documents, resource_type: "Document", wildcard: nil)
+      }.to raise_error(SuperAuth::Error, /wildcard: must be true or false/)
+    end
+  end
+
+  # A grant on a parent record admits the rows whose column names it: the
+  # row's tenancy, read off the row. Folders are ids and nothing more here —
+  # the column step compares folder_id against the ids the holder's Folder::*
+  # rows name, and no folders table takes part.
+  describe "parent grants" do
+    let(:parent) { { column: :folder_id, resource_type: %w[Folder::Member Folder::Editor] } }
+    # The identity under test: its authorization rows, and its assertion.
+    let(:member) { { user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser" } }
+
+    def enable_with_parent(**options)
+      described_class.enable(:documents, resource_type: "Document", parent: parent, **options)
+    end
+
+    def current?(**options)
+      described_class.current?(:documents, resource_type: "Document", parent: parent, **options)
+    end
+
+    def as_member(&block)
+      become(user_external_id: "42", user_external_type: "SuperAuthRlsSpecUser", &block)
+    end
+
+    def folder_of(id)
+      db[:documents].where(id: id).get(:folder_id)
+    end
+
+    before do
+      db.run "ALTER TABLE documents ADD COLUMN folder_id bigint"
+      db[:documents].where(id: doc1_id).update(folder_id: 10)
+      db[:documents].where(id: doc2_id).update(folder_id: 20)
+      enable_with_parent
+    end
+
+    describe "a parent-only identity: one Folder::Member row for folder 10 and nothing else" do
+      before { grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10) }
+
+      it "sees exactly the rows of its folder" do
+        expect(as_member { doc_names }).to eq(["doc1"])
+      end
+
+      it "INSERTs with RETURNING into its folder and reads the row back at once" do
+        as_member do
+          id = db[:documents].insert(name: "doc3", folder_id: 10) # Sequel emits RETURNING id
+          expect(id).to be_a(Integer)
+          expect(db[:documents].where(id: id).get(:name)).to eq("doc3")
+        end
+        expect(all_doc_names).to eq(%w[doc1 doc2 doc3])
+      end
+
+      it "INSERTs without RETURNING" do
+        as_member { db.run "INSERT INTO documents (name, folder_id) VALUES ('doc3', 10)" }
+        expect(all_doc_names).to eq(%w[doc1 doc2 doc3])
+      end
+
+      it "is refused an INSERT into a folder it does not hold" do
+        expect {
+          as_member { db[:documents].insert(name: "doc3", folder_id: 20) }
+        }.to raise_error(Sequel::DatabaseError, /row-level security/)
+        expect(all_doc_names).to eq(%w[doc1 doc2])
+      end
+
+      it "is refused an INSERT with no folder: NULL equals no id" do
+        expect {
+          as_member { db[:documents].insert(name: "doc3") }
+        }.to raise_error(Sequel::DatabaseError, /row-level security/)
+        expect(all_doc_names).to eq(%w[doc1 doc2])
+      end
+
+      it "is refused an UPDATE that moves a row to a folder it does not hold" do
+        expect {
+          as_member { db[:documents].where(id: doc1_id).update(folder_id: 20) }
+        }.to raise_error(Sequel::DatabaseError, /row-level security/)
+        expect(folder_of(doc1_id)).to eq(10)
+      end
+
+      it "deletes exactly its folder's rows with an unfiltered DELETE" do
+        db[:documents].insert(name: "doc3", folder_id: 10)
+        expect(as_member { db[:documents].delete }).to eq(2)
+        expect(all_doc_names).to eq(["doc2"])
+      end
+
+      it "does not see a row with no folder" do
+        db[:documents].insert(name: "orphan")
+        expect(as_member { doc_names }).to eq(["doc1"])
+      end
+    end
+
+    it "admits a holder of two folders to both and lets it move a row between them" do
+      grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+      grant(**member, resource_external_type: "Folder::Member", resource_external_id: 20)
+      as_member do
+        expect(doc_names).to eq(%w[doc1 doc2])
+        expect(db[:documents].where(id: doc1_id).update(folder_id: 20)).to eq(1)
+      end
+      expect(folder_of(doc1_id)).to eq(20)
+    end
+
+    describe "a per-record identity with no folder" do
+      before { grant(**member, resource_external_id: doc1_id) }
+
+      it "sees exactly its row" do
+        expect(as_member { doc_names }).to eq(["doc1"])
+      end
+
+      # WITH CHECK reuses USING, and USING admits the row by its id whatever
+      # the folder column holds, so a per-record holder may file its row
+      # under any folder, one nobody granted included. Which folders a
+      # holder may file under is capability: the client gates that column
+      # on write. Documented behaviour, not a defect.
+      it "may set the folder column to any value" do
+        as_member { expect(db[:documents].where(id: doc1_id).update(folder_id: 999)).to eq(1) }
+        expect(folder_of(doc1_id)).to eq(999)
+        as_member { expect(db[:documents].where(id: doc1_id).update(folder_id: nil)).to eq(1) }
+        expect(folder_of(doc1_id)).to be_nil
+      end
+    end
+
+    it "admits a holder of only the second type in the column's list" do
+      grant(**member, resource_external_type: "Folder::Editor", resource_external_id: 20)
+      expect(as_member { doc_names }).to eq(["doc2"])
+    end
+
+    it "never counts a type-level row on the parent type: NULL equals no id" do
+      grant(**member, resource_external_type: "Folder::Member")
+      expect(as_member { doc_names }).to eq([])
+    end
+
+    describe "the type-level step" do
+      before { grant(**member) } # (Document, NULL)
+
+      it "admits a wildcard holder to every row, a row with no folder included" do
+        db[:documents].insert(name: "orphan")
+        expect(as_member { doc_names }).to eq(%w[doc1 doc2 orphan])
+      end
+
+      it "is emitted by default" do
+        expect(policy_qual).to include("resource_external_id IS NULL")
+      end
+
+      it "is dropped by wildcard: false, and a (type, NULL) row then admits nothing" do
+        enable_with_parent(wildcard: false)
+        expect(policy_qual).not_to include("resource_external_id IS NULL")
+        expect(as_member { doc_names }).to eq([])
+        expect(current?(wildcard: false)).to be(true)
+      end
+    end
+
+    # The policy text is the contract: every step plans as an InitPlan or a
+    # hashed SubPlan, evaluated once per query, never as a SubPlan re-run
+    # for every row of the table. A holder with thousands of rows is where
+    # the difference is seconds. Only the Filter lines reference plans; the
+    # definition lines below them read "SubPlan n" for both kinds.
+    it "plans every step once per query under a heavy holder" do
+      heavy = (1..2000).map { |i| { **member, resource_external_type: "Document", resource_external_id: 100_000 + i } }
+      db[:super_auth_authorizations].multi_insert(heavy)
+      grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+      db.run "ANALYZE super_auth_authorizations"
+
+      plan, count = as_member do
+        [db.fetch("EXPLAIN (FORMAT TEXT) SELECT count(*) FROM documents").map { |row| row[:"QUERY PLAN"] }, db[:documents].count]
+      end
+
+      references = plan.grep(/Filter:/).flat_map { |line| line.scan(/(?:hashed )?SubPlan \d+/) }
+      expect(references.size).to eq(2) # the id step and the folder_id step
+      expect(references).to all(start_with("hashed SubPlan"))
+      expect(plan.grep(/InitPlan \d+/).size).to eq(1) # the type-level step
+      expect(count).to eq(1)
+    end
+
+    it "is idempotent and re-runnable on the protected table" do
+      grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+      expect { 2.times { enable_with_parent } }.not_to raise_error
+      expect(current?).to be(true)
+      expect(as_member { doc_names }).to eq(["doc1"])
+    end
+
+    describe "versioning" do
+      it "stores the version, reach and wildcard as canonical JSON on the policy" do
+        expect(policy_rows.map { |row| row[:comment] }).to eq([
+          '{"super_auth":2,"reach":{"id":["Document"],"folder_id":["Folder::Member","Folder::Editor"]},"wildcard":true}',
+        ])
+      end
+
+      it "is current after enable, for the same reach and wildcard only" do
+        expect(current?).to be(true)
+        expect(current?(wildcard: false)).to be(false)
+        expect(described_class.current?(:documents, resource_type: "Document")).to be(false)
+        expect(described_class.current?(:documents, resource_type: "Document", parent: { column: :folder_id, resource_type: "Folder::Member" })).to be(false)
+      end
+
+      it "is not current after a manual ALTER" do
+        db.run "ALTER TABLE documents DISABLE ROW LEVEL SECURITY"
+        expect(current?).to be(false)
+      end
+
+      it "is not current, and the table is stale, once the comment is gone" do
+        expect(described_class.stale).to eq([])
+        db.run "COMMENT ON POLICY super_auth ON documents IS NULL"
+        expect(current?).to be(false)
+        expect(described_class.stale).to eq([:documents])
+      end
+
+      it "reads the reach back from the comment" do
+        expect(described_class.reach(:documents)).to eq(id: ["Document"], folder_id: %w[Folder::Member Folder::Editor])
+      end
+
+      it "refuses to read a reach from a table with no policy" do
+        described_class.disable(:documents)
+        expect { described_class.reach(:documents) }.to raise_error(SuperAuth::Error, /documents has no super_auth policy/)
+      end
+    end
+
+    describe "a 0.8.0 policy" do
+      it "is stale and not current, and enable replaces it in place, leaving one policy" do
+        current_comment = policy_rows.first[:comment]
+        db.run "DROP POLICY super_auth ON documents"
+        db.run v1_policy_sql
+        expect(policy_qual).to include("IS NULL) OR") # pg_get_expr parenthesises
+        expect(described_class.stale).to eq([:documents])
+        expect(current?).to be(false)
+        # The shape alone rules it out, whatever the comment says.
+        db.run "COMMENT ON POLICY super_auth ON documents IS #{db.literal(current_comment)}"
+        expect(described_class.stale).to eq([])
+        expect(current?).to be(false)
+
+        enable_with_parent
+        expect(described_class.stale).to eq([])
+        expect(current?).to be(true)
+        expect(policy_rows.map { |row| row[:name] }).to eq(["super_auth"])
+        expect(policy_qual).not_to include("IS NULL) OR")
+      end
+
+      # Permissive policies are ORed, so a policy left under a previous name
+      # would keep admitting beside the new one: the current name is always
+      # among the names enable drops.
+      it "cannot be left beside the new one under another name" do
+        expect(described_class::POLICY_NAMES).to include(described_class::POLICY)
+      end
+    end
+
+    describe ".explain" do
+      it "tags each admitting row with the step that admitted it" do
+        grant(**member)
+        grant(**member, resource_external_id: doc1_id)
+        grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+        grant(**member, resource_external_type: "Folder::Editor", resource_external_id: 20)
+
+        rows = as_member { described_class.explain(:documents, doc1_id) }
+
+        expect(rows.map { |row| row.values_at(:step, :resource_external_type, :resource_external_id) }).to eq([
+          [:type_level, "Document", nil],
+          [:id, "Document", doc1_id],
+          [:folder_id, "Folder::Member", 10],
+        ])
+        expect(rows.first[:user_external_id]).to eq(42)
+      end
+
+      it "returns nothing for a record the identity does not reach, or with no identity asserted" do
+        grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+        expect(as_member { described_class.explain(:documents, doc2_id) }).to eq([])
+        expect(as_restricted_role { described_class.explain(:documents, doc1_id) }).to eq([])
+      end
+
+      it "reads in system context when the role may, and puts the caller's identity back" do
+        grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+        steps, names = as_restricted_role(:super_auth_rls_spec_system) do
+          db.transaction do
+            db.get(Sequel.function(:super_auth_become, "42", "SuperAuthRlsSpecUser", nil))
+            [described_class.explain(:documents, doc1_id).map { |row| row[:step] }, doc_names]
+          end
+        end
+        expect(steps).to eq([:folder_id])
+        expect(names).to eq(["doc1"])
+      end
+    end
+
+    describe ".coverage" do
+      let!(:doc3_id) { db[:documents].insert(name: "doc3") } # no folder
+      let!(:doc4_id) { db[:documents].insert(name: "doc4", folder_id: 10) }
+      let(:admin) { SuperAuth::User.create(name: "admin") }
+      let(:member_user) { SuperAuth::User.create(name: "member") }
+      let(:owner) { SuperAuth::User.create(name: "owner") }
+
+      def node(name, type, id = nil)
+        SuperAuth::Resource.create(name: name, external_type: type, external_id: id)
+      end
+
+      def holder(user)
+        { user_id: user.id, user_external_id: nil, user_external_type: nil }
+      end
+
+      # admin: type-level Document, folder 10, per-record doc2, plus a
+      # (Folder::Member, NULL) row that must count for nothing. member: folder
+      # 10 and per-record doc1. owner: per-record doc2 by a user edge, doc4
+      # through a permission, so doc4's node has no user edge. Then a ghost
+      # row with no node behind it, and the wildcard node deleted after the
+      # compile with its row left in place.
+      before do
+        all_documents = node("all documents", "Document")
+        folder10 = node("folder 10", "Folder::Member", 10)
+        doc1_node = node("doc1", "Document", doc1_id)
+        doc2_node = node("doc2", "Document", doc2_id)
+        doc4_node = node("doc4", "Document", doc4_id)
+        read = SuperAuth::Permission.create(name: "read")
+        SuperAuth::Edge.create(user: admin, resource: all_documents)
+        SuperAuth::Edge.create(user: admin, resource: folder10)
+        SuperAuth::Edge.create(user: admin, resource: doc2_node)
+        SuperAuth::Edge.create(user: member_user, resource: folder10)
+        SuperAuth::Edge.create(user: member_user, resource: doc1_node)
+        SuperAuth::Edge.create(user: owner, resource: doc2_node)
+        SuperAuth::Edge.create(user: owner, permission: read)
+        SuperAuth::Edge.create(permission: read, resource: doc4_node)
+        SuperAuth::Authorization.compile!
+
+        grant(user_id: admin.id, resource_external_type: "Folder::Member")
+        grant(user_id: SuperAuth::User.create(name: "ghost").id, resource_external_id: doc2_id)
+        db[:super_auth_edges].where(resource_id: all_documents.id).delete
+        db[:super_auth_resources].where(id: all_documents.id).delete
+        @all_documents_id = all_documents.id
+        @doc4_node_id = doc4_node.id
+      end
+
+      it "fills every bucket" do
+        report = described_class.coverage(:documents)
+
+        expect(report.keys).to eq(%i[loss null_parent orphaned_rows widening deletable_nodes])
+        expect(report[:loss]).to eq([{ holder: holder(admin), count: 1, ids: [doc3_id] }])
+        expect(report[:null_parent]).to eq([{ column: :folder_id, count: 1, ids: [doc3_id] }])
+        expect(report[:orphaned_rows]).to eq([
+          { type: "Document", type_level: false, count: 1, ids: [nil] },
+          { type: "Document", type_level: true, count: 1, ids: [@all_documents_id] },
+          { type: "Folder::Member", type_level: true, count: 1, ids: [nil] },
+        ])
+        expect(report[:widening]).to eq([{ holder: holder(member_user), count: 1, ids: [doc4_id] }])
+        expect(report[:deletable_nodes]).to eq([{ type: "Document", count: 1, ids: [@doc4_node_id] }])
+      end
+
+      it "never counts a type-level row on a parent type as reach" do
+        wild = SuperAuth::User.create(name: "wild")
+        grant(user_id: wild.id)
+        grant(user_id: wild.id, resource_external_type: "Folder::Member")
+
+        entry = described_class.coverage(:documents)[:loss].find { |row| row[:holder] == holder(wild) }
+
+        expect(entry).to eq(holder: holder(wild), count: 4, ids: [doc1_id, doc2_id, doc3_id, doc4_id])
+      end
+
+      # enable grants PUBLIC nothing on the resources and edges tables; a role
+      # that runs coverage needs SELECT on them.
+      it "runs as the application role inside its own identity, and leaves that identity in place" do
+        db.run "GRANT SELECT ON super_auth_resources, super_auth_edges TO super_auth_rls_spec"
+        grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+        report, names = as_member { [described_class.coverage(:documents), doc_names] }
+        expect(report[:deletable_nodes]).to eq([{ type: "Document", count: 1, ids: [@doc4_node_id] }])
+        expect(names).to eq(%w[doc1 doc4])
+      end
     end
   end
 
