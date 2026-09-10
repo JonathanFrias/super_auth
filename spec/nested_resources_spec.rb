@@ -591,6 +591,67 @@ RSpec.describe "nested resources" do
          schema_info schema_migrations ar_internal_metadata].each { |table| db.drop_table?(table) }
     end
 
+    def postgres?
+      db.database_type == :postgres
+    end
+
+    # Sequel's `indexes` reports neither an expression index nor an invalid
+    # one, so the catalogue answers this.
+    def index_exists?(name)
+      !db.fetch("SELECT to_regclass(?) AS oid", name.to_s).first[:oid].nil?
+    end
+
+    # Migration 12's shapes are measured, not incidental: idx_sa_auth_by_resource
+    # leads on the id because a host's per-record work slices by record across
+    # several node types, and the two expression indexes exist because the
+    # policy compares a cast column, which no plain btree serves. Nothing else
+    # in the suite notices a flipped column order or a lost index.
+    it "builds migration 12's indexes with the shapes the workloads need" do
+      SuperAuth.uninstall_migrations
+      SuperAuth.install_migrations
+
+      expect(db.indexes(:super_auth_authorizations)[:idx_sa_auth_by_resource][:columns])
+        .to eq %i[resource_external_id resource_external_type]
+      expect(db.indexes(:super_auth_resources)[:idx_sa_resources_by_external][:columns])
+        .to eq %i[external_type external_id]
+      next unless postgres?
+
+      # Both identity halves are emitted whatever identity a host asserts, so
+      # the user_id index is unconditional. The external one is gated on the
+      # column's catalogue type: this suite installs the default :string, where
+      # varchar->text is a no-op cast that migration 9's plain btree already
+      # answers as a seek, so the gate skips a duplicate.
+      expect(index_exists?(:idx_sa_auth_by_internal_user_text)).to be true
+      external_is_text = %w[varchar text].include?(
+        db.fetch(<<~SQL).first[:typname],
+          SELECT t.typname FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+          WHERE a.attrelid = to_regclass('super_auth_authorizations') AND a.attname = 'user_external_id'
+        SQL
+      )
+      expect(index_exists?(:idx_sa_auth_by_current_user_text)).to be(!external_is_text)
+    ensure
+      SuperAuth.install_migrations
+      SuperAuth.refresh_model_schemas
+    end
+
+    # A host that built its own index under one of these names keeps it: up
+    # skips the name, and down drops nothing, so neither direction can take it.
+    it "leaves an index a host already created under one of migration 12's names" do
+      SuperAuth.uninstall_migrations
+      Sequel::Migrator.run(db, sequel_migrations, target: 11)
+      db.add_index :super_auth_authorizations, [:resource_external_type], name: :idx_sa_auth_by_resource
+      SuperAuth.install_migrations
+
+      expect(db.indexes(:super_auth_authorizations)[:idx_sa_auth_by_resource][:columns]).to eq %i[resource_external_type]
+
+      Sequel::Migrator.run(db, sequel_migrations, target: 11)
+      expect(db.indexes(:super_auth_authorizations)[:idx_sa_auth_by_resource][:columns]).to eq %i[resource_external_type]
+    ensure
+      SuperAuth.uninstall_migrations
+      SuperAuth.install_migrations
+      SuperAuth.refresh_model_schemas
+    end
+
     it "adds parent_id with a foreign key on the way up and removes it on the way down" do
       SuperAuth.uninstall_migrations
       expect(db.table_exists?(:super_auth_resources)).to be false
@@ -623,6 +684,13 @@ RSpec.describe "nested resources" do
       ActiveRecord::MigrationContext.new(ar_migrations).migrate
       expect(resource_columns).to include(:parent_id)
       expect(parent_foreign_keys).to eq [:super_auth_resources]
+      # The twin builds migration 12's indexes the same way round; drift
+      # between the flavours is otherwise invisible.
+      expect(db.indexes(:super_auth_authorizations)[:idx_sa_auth_by_resource][:columns])
+        .to eq %i[resource_external_id resource_external_type]
+      expect(db.indexes(:super_auth_resources)[:idx_sa_resources_by_external][:columns])
+        .to eq %i[external_type external_id]
+      expect(index_exists?(:idx_sa_auth_by_internal_user_text)).to be true if postgres?
 
       ActiveRecord::MigrationContext.new(ar_migrations).migrate(0)
       expect(db.table_exists?(:super_auth_resources)).to be false

@@ -797,6 +797,66 @@ RSpec.describe SuperAuth::RLS do
     SQL
   end
 
+  # The identity halves are the one clause every step carries, so how they
+  # compare a free-text setting against a typed column decides both what a
+  # malformed identity does and what any of it can index.
+  describe "the identity halves" do
+    # Sequel logs every statement it runs, which is where the policy text is
+    # visible as emitted rather than as Postgres prints it back.
+    def emitted_sql
+      recorder = Object.new
+      recorder.define_singleton_method(:statements) { @statements ||= [] }
+      %i[info error].each { |level| recorder.define_singleton_method(level) { |message| statements << message } }
+      db.loggers << recorder
+      yield
+      recorder.statements
+    ensure
+      db.loggers.delete(recorder)
+    end
+
+    # The column is cast to text; the setting is never cast to a column type.
+    # The comment above INTERNAL_USER says what casting the setting costs —
+    # a transaction-wide abort on a malformed identity, and silent truncation
+    # to varchar(255) on the default install. This example is what stops the
+    # cast being reintroduced by someone re-deriving the index argument
+    # without the safety one.
+    it "casts the column, never the setting" do
+      policy = emitted_sql { described_class.enable(:documents, resource_type: "Document") }
+        .grep(/CREATE POLICY/).first
+
+      expect(policy).to include("a.user_id::text = NULLIF(current_setting('super_auth.user_id', true), '')")
+      expect(policy).to include("a.user_external_id::text = NULLIF(current_setting('super_auth.user_external_id', true), '')")
+      %w[uuid int integer bigint varchar].each do |type|
+        expect(policy).not_to include("'')::#{type}")
+      end
+    end
+
+    # super_auth_become validates nothing and become_args hands it
+    # `user.id.to_s` for any object at all, so an id of the wrong type for the
+    # install's columns is a reachable identity: 'abc' for the integer user_id
+    # here, and '42' for user_external_id on a uuid install. Under the shipped
+    # cast both are simply no rows. Under a cast on the setting the first
+    # statement raises 22P02 and every later one in the transaction 25P02,
+    # which is why the last assertion inside the transaction is the
+    # load-bearing one: "denied" and "the transaction is dead" are not the
+    # same answer.
+    it "answers a malformed identity with no rows and leaves the transaction usable" do
+      grant(user_external_id: 42, user_external_type: "SuperAuthRlsSpecUser", resource_external_id: doc1_id)
+
+      [["42", "User", nil], [nil, nil, "abc"]].each do |args|
+        expect {
+          as_restricted_role do
+            db.transaction do
+              db.get(Sequel.function(:super_auth_become, *args))
+              expect(db[:documents].select_order_map(:name)).to eq([])
+              expect(db.get(Sequel.lit("1"))).to eq(1)
+            end
+          end
+        }.not_to raise_error
+      end
+    end
+  end
+
   # The preflight runs before any DDL, so a refused enable leaves the table
   # exactly as it was.
   describe "preflight" do
@@ -992,7 +1052,66 @@ RSpec.describe SuperAuth::RLS do
       references = plan.grep(/Filter:/).flat_map { |line| line.scan(/(?:hashed )?SubPlan \d+/) }
       expect(references.size).to eq(2) # the id step and the folder_id step
       expect(references).to all(start_with("hashed SubPlan"))
-      expect(plan.grep(/InitPlan \d+/).size).to eq(1) # the type-level step
+      # Only the definition lines, which begin with the keyword: Postgres 17
+      # prints an InitPlan's output reference as `(InitPlan 1).col1` inside
+      # the Filter line, so grepping for the bare name counts it twice.
+      expect(plan.count { |line| line.match?(/^\s*InitPlan \d+/) }).to eq(1) # the type-level step
+      expect(count).to eq(1)
+    end
+
+    # The other half of the contract: every step must reach its rows through
+    # an index on what the policy compares. The identity halves compare
+    # a.user_id::text and a.user_external_id::text, expressions no plain btree
+    # can serve on a bigint or uuid install, and migration 12's two expression
+    # indexes are what makes them seeks — without them each step scans
+    # super_auth_authorizations once per statement, on every protected table.
+    #
+    # enable_seqscan = off, not a bigger fixture: nobody has measured the row
+    # count at which the planner picks these unaided, so a spec asserting an
+    # unaided choice would flake. Turning off the sequence scan does not hide
+    # a missing index either — with the expression indexes dropped the planner
+    # falls back to idx_sa_auth_by_resource with the identity demoted to a
+    # Filter, which is what the first assertion refuses. Do not delete the
+    # SET LOCAL to "fix" this spec.
+    it "seeks the identity halves through the expression indexes under a heavy holder" do
+      heavy = (1..2000).map { |i| { **member, resource_external_type: "Document", resource_external_id: 100_000 + i } }
+      db[:super_auth_authorizations].multi_insert(heavy)
+      # Rows of another identity on the same types, per-record and type-level,
+      # so every arm's identity slice is narrower than its resource slice and
+      # the planner has a reason to prefer the identity index rather than a
+      # coin toss between two arms of the same size. The type-level rows are
+      # what make the wildcard arm — the one measured at 95% of the statement
+      # on a host with 150,000 of them — seek rather than filter.
+      other = { user_external_id: 43, user_external_type: "SuperAuthRlsSpecUser" }
+      decoys = (1..4000).map { |i|
+        { **other, resource_external_type: "Document", resource_external_id: 200_000 + i }
+      } + (1..4000).map {
+        { **other, resource_external_type: "Document", resource_external_id: nil }
+      }
+      db[:super_auth_authorizations].multi_insert(decoys)
+      grant(**member, resource_external_type: "Folder::Member", resource_external_id: 10)
+      db.run "ANALYZE super_auth_authorizations"
+
+      plan, count = as_member do
+        db.run "SET LOCAL enable_seqscan = off"
+        [db.fetch("EXPLAIN (FORMAT TEXT) SELECT count(*) FROM documents").map { |row| row[:"QUERY PLAN"] }, db[:documents].count]
+      end
+
+      # Index Cond is a seek and Filter is a scan; that distinction is the
+      # whole question. A Recheck Cond only ever restates the Index Cond of
+      # the bitmap scan below it.
+      identity = /current_setting\('super_auth\.user_(id|external_id)'/
+      expect(plan.grep(identity)).to all(match(/(Index|Recheck) Cond:/))
+      expect(plan.grep(/Filter:/).grep(identity)).to eq([])
+      expect(plan.grep(/Seq Scan on super_auth_authorizations/)).to eq([])
+      expect(plan.grep(/idx_sa_auth_by_internal_user_text/)).not_to be_empty
+      # This suite installs :bigint, so migration 12 builds the external index
+      # too; on a :string install its gate skips it and migration 9's
+      # idx_sa_auth_by_current_user answers the same predicate as a seek,
+      # because varchar->text is a no-op cast.
+      expect(plan.grep(/idx_sa_auth_by_current_user_text/)).not_to be_empty
+      # A plan assertion that passed while the policy admitted the wrong rows
+      # would be worse than none.
       expect(count).to eq(1)
     end
 
@@ -1164,6 +1283,29 @@ RSpec.describe SuperAuth::RLS do
         expect(report[:deletable_nodes]).to eq([{ type: "Document", count: 1, ids: [@doc4_node_id] }])
       end
 
+      # The compile copies a granted container's edges down to every node in
+      # its subtree, so a per-record node under a granted container is that
+      # holder's only path to the record even though no edge points at the
+      # node itself. Listing it as deletable is the wholesale revocation the
+      # bucket exists to prevent.
+      it "does not list a per-record node a user edge reaches through an ancestor" do
+        container = node("container", nil)
+        SuperAuth::Resource.create(name: "doc3 node", external_type: "Document", external_id: doc3_id, parent_id: container.id)
+        SuperAuth::Edge.create(user: owner, resource: container)
+        SuperAuth::Authorization.compile!
+
+        expect(become(user_id: owner.id.to_s) { doc_names }).to include("doc3")
+        expect(described_class.coverage(:documents)[:deletable_nodes])
+          .to eq([{ type: "Document", count: 1, ids: [@doc4_node_id] }])
+      end
+
+      # Under wildcard: false the type-level step is not in the policy, so a
+      # (type, NULL) row admits nothing and deleting it takes nothing away.
+      it "reports no loss under wildcard: false" do
+        enable_with_parent(wildcard: false)
+        expect(described_class.coverage(:documents)[:loss]).to eq([])
+      end
+
       it "never counts a type-level row on a parent type as reach" do
         wild = SuperAuth::User.create(name: "wild")
         grant(user_id: wild.id)
@@ -1194,16 +1336,111 @@ RSpec.describe SuperAuth::RLS do
       }.to raise_error(SuperAuth::Error, /requires Postgres/)
     end
 
-    it "SuperAuth.as raises too and leaves current_user untouched" do
+    # SuperAuth.as does not: a host on SQLite or MySQL, and a Postgres host
+    # that has not run the rls generator, has no policy reading the database
+    # identity, so `as` sets the one layer that exists and runs the block.
+    # RLS.as, the half that raises, is skipped rather than reached.
+    it "SuperAuth.as sets current_user, runs the block, and restores" do
       SuperAuth.db # the models bind to the first Sequel::Database created
       sqlite = Sequel.sqlite
       SuperAuth.current_user = :before
-      expect {
-        SuperAuth.as(:someone, db: sqlite) {}
-      }.to raise_error(SuperAuth::Error, /requires Postgres/)
+      seen = nil
+      expect(SuperAuth.as(:someone, db: sqlite) { seen = SuperAuth.current_user; :returned }).to eq(:returned)
+      expect(seen).to eq(:someone)
       expect(SuperAuth.current_user).to eq(:before)
     ensure
       SuperAuth.current_user = nil
     end
+
+    it "restores current_user when the block raises" do
+      SuperAuth.db
+      sqlite = Sequel.sqlite
+      SuperAuth.current_user = :before
+      expect { SuperAuth.as(:someone, db: sqlite) { raise "boom" } }.to raise_error("boom")
+      expect(SuperAuth.current_user).to eq(:before)
+    ensure
+      SuperAuth.current_user = nil
+    end
+
+    it "still opens the transaction and asserts identity once the functions are there" do
+      # The memo must not pin the ORM-only answer past the migration that
+      # installs them; RLS.enable clears it. The transaction is the visible
+      # difference: RLS.as needs one, since the identity dies with it.
+      expect(SuperAuth.rls?(SuperAuth.db)).to be true
+      in_txn = nil
+      as_restricted_role { SuperAuth.as(nil) { in_txn = SuperAuth.db.in_transaction? } }
+      expect(in_txn).to be true
+    end
+  end
+end
+
+# The gem's default install types the external id columns varchar(255), the
+# one shape where casting the setting instead of the column is not merely slow
+# but wrong: a `::varchar(255)` cast built from format_type truncates
+# silently, so a longer asserted identity matches a stored 255-character one —
+# fail open, which is the wrong direction for an authorization check. The
+# shipped predicate casts the column to text and truncates nothing. Its own
+# install, because external_id_type is global and the suite above runs
+# :bigint.
+RSpec.describe "SuperAuth::RLS on a :string install" do
+  let(:db) { SuperAuth.db }
+
+  around do |example|
+    skip "Postgres only" unless SuperAuth.db.database_type == :postgres
+
+    SuperAuth.external_id_type = :string
+    begin
+      SuperAuth.uninstall_migrations
+    rescue SuperAuth::Error
+    end
+    SuperAuth.install_migrations
+    SuperAuth.load
+    # Text ids on both sides: the policy compares them with no cast.
+    db.run "DROP TABLE IF EXISTS documents"
+    db.run "CREATE TABLE documents (id text PRIMARY KEY, name text)"
+    db.run "DO $$ BEGIN CREATE ROLE super_auth_rls_spec; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    db.run "GRANT SELECT, INSERT, UPDATE, DELETE ON documents TO super_auth_rls_spec"
+    SuperAuth::RLS.enable(:documents, resource_type: "Document")
+
+    example.run
+  ensure
+    if SuperAuth.db.database_type == :postgres
+      db.run "RESET ROLE"
+      db.run "DROP TABLE IF EXISTS documents"
+      db.run "DROP OWNED BY super_auth_rls_spec"
+      db.run "DROP ROLE IF EXISTS super_auth_rls_spec"
+      SuperAuth.uninstall_migrations
+    end
+  end
+
+  def visible_to(external_id)
+    db.run "SET ROLE super_auth_rls_spec"
+    db.transaction do
+      db.get(Sequel.function(:super_auth_become, external_id, "SuperAuthRlsSpecUser", nil))
+      db[:documents].select_order_map(:name)
+    end
+  ensure
+    db.run "RESET ROLE"
+  end
+
+  it "does not admit an identity that a varchar(255) cast would truncate onto a stored one" do
+    stored = "v" * 255
+    db[:documents].insert(id: "doc1", name: "doc1")
+    db[:super_auth_authorizations].insert(
+      user_external_id: stored, user_external_type: "SuperAuthRlsSpecUser",
+      resource_external_type: "Document", resource_external_id: "doc1",
+    )
+
+    expect(visible_to(stored)).to eq(["doc1"])
+    expect(visible_to("#{stored}ATTACKER-SUFFIX")).to eq([])
+  end
+
+  # varchar->text is a no-op cast, so migration 9's plain btree already answers
+  # the external half as a seek here and migration 12's gate skips the
+  # duplicate. The internal half is int4 on every install and never has one.
+  it "leaves the external expression index unbuilt and builds the internal one" do
+    expect(db.indexes(:super_auth_authorizations)).to have_key(:idx_sa_auth_by_current_user)
+    expect(db.fetch("SELECT to_regclass('idx_sa_auth_by_current_user_text') AS c").first[:c]).to be_nil
+    expect(db.fetch("SELECT to_regclass('idx_sa_auth_by_internal_user_text') AS c").first[:c]).not_to be_nil
   end
 end

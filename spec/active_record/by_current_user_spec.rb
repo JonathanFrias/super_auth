@@ -683,8 +683,19 @@ RSpec.describe SuperAuth do
         end
       end
 
+      # Declared on a table that does not exist: columns_hash on one raises
+      # ActiveRecord::StatementInvalid, so a macro that read the schema here
+      # could not survive this example. Capturing the SQL instead proves
+      # nothing — capture_sql drops statements named SCHEMA, which is exactly
+      # what ActiveRecord names a column load.
       it "reads no schema at declaration, so a process boots before its migrations" do
-        expect(capture_sql { missing_column_class }).to be_empty
+        expect {
+          Class.new(ActiveRecord::Base) do
+            self.table_name = :not_yet_migrated_documents
+            def self.name = "NotYetMigratedDocument"
+            super_auth parent: { column: :organization_id, resource_type: "Organization::Member" }
+          end
+        }.not_to raise_error
       end
 
       it "refuses a parent column the table does not have" do

@@ -144,12 +144,37 @@ module SuperAuth
   # the connection that holds the transaction.
   def self.as(user, db: SuperAuth.db, **options)
     previous = current_user
+    unless rls?(db)
+      # No policy on this database reads the identity, so there is nothing to
+      # assert and no reason to open a transaction for it — the ORM scope
+      # reads current_user and nothing else. This is the shape of a host that
+      # has not turned RLS on, and of every host on SQLite or MySQL, where
+      # RLS.as raises. Turning RLS on later needs no application change: the
+      # same call starts asserting both layers.
+      self.current_user = user
+      return yield
+    end
     SuperAuth::RLS.as(user, db: db, **options) do
       self.current_user = user
       yield
     end
   ensure
     self.current_user = previous
+  end
+
+  # Whether `db` carries the RLS functions — the question `as` asks on every
+  # block, so the answer is memoised for SuperAuth.db: it is a catalogue
+  # round trip, and only a migration changes it. RLS.enable, which is what
+  # creates them, clears it; so does SuperAuth.db=. Call `rls!` after
+  # installing them some other way in a live process.
+  def self.rls?(db = SuperAuth.db)
+    return SuperAuth::RLS.installed?(db: db) unless db.equal?(@db)
+    @rls = SuperAuth::RLS.installed?(db: db) if @rls.nil?
+    @rls
+  end
+
+  def self.rls!
+    @rls = nil
   end
 
   # Both user models are internal: their id is the user_id that the policies
@@ -231,6 +256,7 @@ module SuperAuth
   # Models already loaded follow the new database; see refresh_model_schemas.
   def self.db=(db)
     @db = db
+    @rls = nil
     refresh_model_schemas if defined?(SuperAuth::User) && SuperAuth::User.respond_to?(:set_dataset)
   end
 end

@@ -100,6 +100,16 @@ some base authorization support to future apps. The policy decides which rows an
 identity may touch at all; which of those it may write is the application's decision,
 in code, in every language that writes.
 
+**Optional means optional.** Nothing outside this section needs it. The tables,
+`ByCurrentUser`, `permission_gated`, `parent:` grants and the graph editor all work on
+SQLite and MySQL, and on Postgres with no policy enabled — `rails generate
+super_auth:rls` is a separate generator you run when you want the second layer, and
+until you do there is nothing to configure and nothing to keep current. `SuperAuth.as`
+is the same call either way: on a database with no policies it sets `current_user` and
+runs the block, and once `enable` has run it also opens the transaction and asserts the
+database identity. So the ORM layer is deployable first and RLS is a later migration,
+not a rewrite. `SuperAuth.rls?` reports which mode you are in.
+
 ### The contract (any language)
 
 Identity is asserted per transaction by calling the `super_auth_become` function that
@@ -145,8 +155,9 @@ connection.
 Every protected table carries one policy, `super_auth`, `FOR ALL`. Its `USING` is the
 transaction stamp AND (system context OR one step per entry of the table's *reach*):
 the columns through which a compiled authorization reaches a row, each with the types
-whose rows admit through it. The reach is declared once, when the policy is enabled,
-and the ORM scope reads the same declaration (see [Permission-Gated Models](#permission-gated-models)):
+whose rows admit through it. The reach is declared on the policy and again on the model,
+both through `SuperAuth::Reach.normalize`, and `current?` is what confirms the two agree
+(see [Permission-Gated Models](#permission-gated-models)):
 
 ```ruby
 SuperAuth::RLS.enable(:claims,
@@ -179,7 +190,14 @@ Each subquery is written out as the `UNION ALL` of its two `<holder>` halves —
 managed inside super_auth, and `a.user_external_id::text =
 NULLIF(current_setting('super_auth.user_external_id', true), '') AND a.user_external_type =
 NULLIF(current_setting('super_auth.user_external_type', true), '')` for an application
-user — so each half can walk `idx_sa_auth_by_current_user`. Three kinds of step, in
+user — so each half can walk an index of its own. The column is cast to text and never the
+setting to the column's type, so a malformed identity is no rows rather than an error that
+aborts the transaction, and a cast on a column defeats a plain btree: migration 12 indexes
+the two expressions the policy actually writes, `(user_id::text)` on every Postgres host
+and `(user_external_id::text)` on the hosts where `external_id_type` is not a text type —
+where it is, `idx_sa_auth_by_current_user` already answers the cast as a seek. Both halves
+are emitted whatever kind of identity you assert, so every install reads through the
+`user_id` half too, which is why that index is not optional. Three kinds of step, in
 this order:
 
 - **Type-level.** A compiled row for one of the table's own types with
@@ -407,6 +425,73 @@ changed `parent:` in the model and not in the database, and `RENAME COLUMN`, whi
 rewrites the stored expression while the comment keeps the old column name. `installed?`
 is unchanged and means only that the identity functions exist.
 
+### If you are still on 0.7.x or 0.8.0
+
+The policy those releases installed is one `EXISTS` correlated on the outer row —
+`(a.resource_external_id IS NULL OR a.resource_external_id = t.id) AND (internal OR
+external)` — so its cost is paid once per row the statement touches, and what it scales
+with is the number of **type-level** grants (`resource_external_id IS NULL`) on the types
+you protect, not your record count. You cannot change the predicate without upgrading, so
+measure yours before deciding anything:
+
+```sql
+SELECT count(*) AS total,
+       count(*) FILTER (WHERE resource_external_id IS NULL) AS type_level
+FROM super_auth_authorizations;
+
+SELECT resource_external_type, count(*)
+FROM super_auth_authorizations
+WHERE resource_external_id IS NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+The breakdown is the number to read, not the total: the type-level step is type-scoped, so
+a table protected as `Claim` pays for the `Claim` rows and not for 50,000 rows of an admin
+type no policy reads. Take the count for each type you passed to `enable`. It counts
+principals holding a type-level grant on a protected type, which for most designs is an
+admin population and therefore bounded by staff rather than by customers; it is where a
+host hands type-level grants on a protected type to ordinary users that it grows without a
+ceiling.
+
+The curve, measured on synthetic data — a uuid install, an 8,000-row protected table, one
+`SELECT count(*)`: at ~1,000 type-level rows, 7.9–9.5 s; at 50,000, 121–141 s; at 150,000,
+348–350 s. That last is 5.8 minutes for one `count(*)` over 8,000 rows. A second rig, at
+1,056,000 compiled rows, brackets where it turns: at 12 type-level rows a single-row read
+is 0.59 ms and `count(*)` 563 ms, at 1,000 rows 1.03 ms and 622 ms, at 50,000 rows 56.0 ms
+and over 30 s. Somewhere between 1,000 and 50,000 the planner abandons the `BitmapOr` over
+`idx_sa_auth_by_resource` and falls back to scanning `super_auth_authorizations` once per
+outer row. Below about 1,000 you are in the good plan and there is nothing to do. Every
+figure in this section is from a synthetic rig; the one production install measured while
+it was written carried 1,799 compiled rows, 439 of them type-level, where none of this is
+worth doing.
+
+Re-time any statement you believe is fine with `SET LOCAL synchronize_seqscans = off`
+inside the transaction. Without it the same statement measured 20,463 ms and 8.495 ms
+minutes apart, because each sequence scan starts where the last one stopped; warm numbers
+taken with it on are not reproducible, and they are the likeliest reason a host believes it
+has no problem.
+
+Your only lever short of upgrading is an index, and the honest answer is that it might do
+nothing. Migration 12's two expression indexes can be built on a 0.8.0 database — they are
+`CONCURRENTLY`, and they index columns the 0.8.0 predicate names too — and the two
+measurements of that disagree, for a reason: at ~165,000 compiled rows with a holder of a
+handful of grants, 368,216 ms became 67.9 ms; at 1,056,000 rows with a holder of 8,000
+per-record grants, nothing changed at all, because the planner declines an identity bitmap
+it estimates at 6,415 rows when it would be re-read once per outer row. So build them
+`CONCURRENTLY`, `EXPLAIN` your worst statement with `synchronize_seqscans` off, and believe
+the plan rather than either number: if `Seq Scan on super_auth_authorizations` is still in
+it, drop them again — on a uuid host they cost about 25 MB and roughly halve compile insert
+throughput (~173k rows/s to ~79k).
+
+Upgrading is the fix, and it is a different order of magnitude from any index, because it
+changes the shape rather than the access path. 0.9.0's steps are uncorrelated with the
+outer row, so the type-level step plans once per query instead of once per row: 350,173 ms
+to 86 ms on the same data with no index change at all, then 86 ms to about 1 ms once
+migration 12's expression indexes land. Build the indexes before you re-run `enable`, not
+after: 0.9.0's policy without them is a regression against 0.8.0 on single-row reads
+(512.9 ms against 70.9 ms on the uuid rig), because uncorrelated subqueries pay their full
+cost to read one row where the correlated `EXISTS` stopped at the first match.
+
 ### Explaining and measuring reach
 
 ```ruby
@@ -432,11 +517,13 @@ parent column: rows with NULL in it, which no parent grant can reach), `orphaned
 (compiled rows whose node is gone or no longer names them, by type and whether type-level),
 `widening` (per holder of a parent-type row: rows the parent step admits that no per-record
 row did), `deletable_nodes` (per type: the per-record nodes no user->resource edge points
-at and no child sits under — the only ones a cleanup may delete, because access granted
-straight to a user has no other path). `ids` are the table's in the first, second and
-fourth and `super_auth_resources` ids in the other two. Both readers run in system
-context when the role may assert it and as the caller's own identity otherwise, and need
-`SELECT` on the table, `super_auth_resources` and `super_auth_edges`.
+at, on themselves or on any ancestor, and no child sits under — the only ones a cleanup may
+delete, because access granted straight to a user has no other path). `ids` are the table's
+in the first, second and fourth and `super_auth_resources` ids in the other two. Both
+readers run in system context when the role may assert it and as the caller's own identity
+otherwise. `coverage` needs `SELECT` on the table, `super_auth_resources` and
+`super_auth_edges`, which `enable` grants to nobody; `explain` reads only the table and
+`super_auth_authorizations`, so it needs neither.
 
 ### Notes
 

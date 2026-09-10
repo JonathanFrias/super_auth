@@ -15,9 +15,14 @@ module SuperAuth::ActiveRecord::Nested
 
   private
 
-  # SuperAuth::ActiveRecord::Group -> SuperAuth::Group.
+  # SuperAuth::ActiveRecord::Group -> SuperAuth::Group. Through base_class,
+  # because a host subclasses these models to add scopes and callbacks and
+  # the twin is the gem's: on the concrete name, Module#const_get falls
+  # through to Object and returns the host's own class, which has neither
+  # ancestor_pairs nor singularize, so every re-parent and every destroy
+  # through a subclass raised NoMethodError.
   def sequel_twin
-    SuperAuth.const_get(self.class.name.split("::").last)
+    SuperAuth.const_get(self.class.base_class.name.split("::").last)
   end
 
   def parent_outside_own_subtree

@@ -13,8 +13,11 @@ SuperAuth.setup do |config|
   # Default is :none (returns empty results silently).
   # config.missing_user_behavior = :raise
 
-  # Postgres row-level security: enable it per table with
+  # Wrap request work in SuperAuth.as(current_user) { ... } — in an
+  # around_action, and around jobs — so the ByCurrentUser scope has a user.
+  #
+  # Postgres row-level security is optional and off until you ask for it:
   #   rails generate super_auth:rls Model ...
-  # then wrap request work in SuperAuth.as(current_user) { ... } wherever
-  # database-level enforcement should apply.
+  # Once that migration has run, the same SuperAuth.as call also asserts the
+  # identity the policies read, so turning it on costs no application change.
 end

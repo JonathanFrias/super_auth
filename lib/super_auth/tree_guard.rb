@@ -38,7 +38,7 @@ module SuperAuth
             UNION
             SELECT r.id, r.parent_id FROM super_auth_resources r JOIN ancestors a ON r.id = a.parent_id
           )
-          SELECT 1 FROM ancestors WHERE ancestors.id = NEW.id
+          SELECT 1 FROM ancestors WHERE ancestors.id = NEW.id OR ancestors.parent_id = NEW.id
         ) THEN
           RAISE EXCEPTION 'super_auth_resources: parent_id % is inside the subtree of node %, which would close a cycle', NEW.parent_id, NEW.id
             USING ERRCODE = 'check_violation';
@@ -50,6 +50,14 @@ module SuperAuth
 
     # The walk goes UP from the new parent with UNION, so a cycle already in
     # the table that does not include the row terminates instead of looping.
+    # It refuses an ancestor that IS the row and an ancestor whose parent_id
+    # NAMES the row, because migration 11 makes the parent_id key DEFERRABLE
+    # on Postgres: inside one transaction a row may point at a parent that
+    # does not exist yet, and on the id alone the walk stops on that dangling
+    # pointer and admits the write that closes the cycle when the parent
+    # arrives. A pointer at the row is a cycle whether or not its target
+    # exists yet, which is what the second test asks; an out-of-order insert
+    # with no cycle still passes.
     # WHEN keeps the trigger off every root write, which is most of them.
     TRIGGER_SQL = <<~SQL.freeze
       CREATE TRIGGER #{NAME}
@@ -80,13 +88,20 @@ module SuperAuth
 
       # Whether the trigger is on the table now — the question a test helper
       # or a health check asks of a database that may have been built from
-      # schema.rb.
+      # schema.rb. The table is resolved through search_path, the way the
+      # CREATE TRIGGER above resolves it: matching pg_class.relname instead
+      # would answer for a super_auth_resources in any schema, so a leftover
+      # copy in another one that still carries the trigger would report the
+      # live table guarded when it is not. to_regclass rather than a
+      # ::regclass cast, as everywhere else in the gem, because this is asked
+      # of a database that may not have the table yet and a cast raises where
+      # the question has an answer: no table, no trigger.
       def installed?(db: SuperAuth.db)
         return false unless postgres?(db)
 
         db.fetch(
-          "SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid " \
-          "WHERE c.relname = 'super_auth_resources' AND t.tgname = ? AND NOT t.tgisinternal", NAME
+          "SELECT 1 FROM pg_trigger t WHERE t.tgrelid = to_regclass('super_auth_resources') " \
+          "AND t.tgname = ? AND NOT t.tgisinternal", NAME
         ).any?
       end
 

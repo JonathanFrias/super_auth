@@ -97,6 +97,8 @@ module SuperAuth
         end
         preflight!(table, reach, db)
         create_functions(db)
+        # SuperAuth.as memoises whether they exist; this is what creates them.
+        SuperAuth.rls!
         grant_runtime_reads(db)
         t = db.literal(Sequel.identifier(table.to_s))
         db.transaction do
@@ -211,7 +213,8 @@ module SuperAuth
       #                   for the first time. A holder a type-level row already
       #                   admits everywhere is left out. ids are the table's.
       #   deletable_nodes per own type: the per-record nodes no user->resource
-      #                   edge points at. Access granted through a permission
+      #                   edge points at, on the node itself or on any
+      #                   ancestor of it. Access granted through a permission
       #                   edge travels with the permission and can be replaced
       #                   by the parent column; access granted straight to a
       #                   user — an owner, a veteran with one read grant — has
@@ -227,7 +230,9 @@ module SuperAuth
       # may assert it, and otherwise as the identity the caller has, which
       # sees only its own rows (see `reading`); either way the role needs
       # SELECT on the table and on super_auth_resources and super_auth_edges,
-      # which enable grants to nobody.
+      # which enable grants to nobody. `explain` needs neither of those two:
+      # it reads only the table and super_auth_authorizations, which enable
+      # grants to PUBLIC.
       def coverage(table, db: SuperAuth.db)
         postgres!(db)
         meta = metadata(table, db)
@@ -236,12 +241,18 @@ module SuperAuth
         t = Sequel.identifier(table.to_s)
         tq = db.literal(t)
         reading(db) do
+          # null_parent is counted first and held in a local: loss and
+          # widening point the identity settings at each holder in turn and
+          # leave them there, so a bucket that samples the table after them
+          # would read it as that last holder rather than as the caller. The
+          # returned Hash keeps the documented order.
+          null_parent = parents.keys.filter_map { |column|
+            entry = sample(t, "#{tq}.#{db.literal(Sequel.identifier(column.to_s))} IS NULL", db)
+            { column: column, **entry } if entry[:count] > 0
+          }
           {
-            loss: loss(t, tq, reach, db),
-            null_parent: parents.keys.filter_map { |column|
-              entry = sample(t, "#{tq}.#{db.literal(Sequel.identifier(column.to_s))} IS NULL", db)
-              { column: column, **entry } if entry[:count] > 0
-            },
+            loss: loss(t, tq, reach, meta[:wildcard], db),
+            null_parent: null_parent,
             orphaned_rows: orphaned_rows(reach, db),
             widening: widening(t, tq, reach, meta[:wildcard], db),
             deletable_nodes: deletable_nodes(reach, db),
@@ -333,9 +344,22 @@ module SuperAuth
       SYSTEM = "COALESCE(current_setting('super_auth.system', true), '') = 'true'".freeze
       # The two halves of "this compiled row belongs to the asserted
       # identity", with `a` the super_auth_authorizations alias. The column is
-      # cast to text rather than the setting to the column's type: a setting
-      # is free text, and casting it would turn a malformed identity into an
-      # error inside every query instead of into no rows.
+      # cast to text rather than the setting to the column's type, because a
+      # setting is free text and casting it fails in both directions.
+      # Postgres folds the cast at PLAN time — a bare EXPLAIN with no ANALYZE,
+      # a zero-row unindexed table and LIMIT 0 each raise 22P02 on a malformed
+      # identity, 22003 on an out-of-range integer, and then 25P02 for every
+      # later statement in the transaction — so no clause order, guard, index
+      # or row count avoids it, and a denied caller kills the transaction
+      # instead of seeing no rows. And on the default :string install the cast
+      # target format_type reports is varchar(255), which truncates silently:
+      # a 270-character asserted identity then matches a stored 255-character
+      # one, fail open, an authorization-widening bug. A total SQL function
+      # over the setting, regex-guarded and returning NULL rather than
+      # raising, is the one variant neither fact kills; it was proposed after
+      # the measurements were taken, so it is unmeasured in combination, and
+      # it would still need an index on user_id because `holdings` emits both
+      # halves unconditionally. A candidate for a later release, not this one.
       INTERNAL_USER = "a.user_id::text = NULLIF(current_setting('super_auth.user_id', true), '')".freeze
       EXTERNAL_USER = "a.user_external_id::text = NULLIF(current_setting('super_auth.user_external_id', true), '') " \
         "AND a.user_external_type = NULLIF(current_setting('super_auth.user_external_type', true), '')".freeze
@@ -357,7 +381,12 @@ module SuperAuth
 
       # `select` from the holder's compiled rows matching `where`, the two
       # identity halves as a UNION ALL rather than an OR inside one WHERE, so
-      # each half can walk idx_sa_auth_by_current_user on its own.
+      # each half can walk an index of its own: idx_sa_auth_by_internal_user_text
+      # for user_id, and for the external half idx_sa_auth_by_current_user
+      # (migration 9) where external_id_type is a text type and
+      # idx_sa_auth_by_current_user_text where it is not. Both halves are
+      # emitted whatever kind of identity is asserted, so every install pays
+      # for the internal one and an index on user_id is not optional.
       def holdings(select, where)
         [INTERNAL_USER, EXTERNAL_USER].map { |user|
           "SELECT #{select} FROM super_auth_authorizations a WHERE #{where} AND #{user}"
@@ -543,7 +572,13 @@ module SuperAuth
         { count: ds.count, ids: ds.order(:id).limit(20).select_map(:id) }
       end
 
-      def loss(t, tq, reach, db)
+      # Nothing to lose under wildcard: false. The type-level step is not in
+      # the policy there, so a (type, NULL) row admits nothing and deleting it
+      # takes nothing away; the bucket is defined by exclusion, so without
+      # this it would list every record the holder cannot reach at all.
+      def loss(t, tq, reach, wildcard, db)
+        return [] unless wildcard
+
         holders_of(type_level_where(reach[:id], db), db).filter_map do |holder|
           as_holder(holder, db)
           unreached = ["NOT (#{column_step(tq, :id, reach[:id], db)})"]
@@ -595,11 +630,23 @@ module SuperAuth
         end
       end
 
+      # The user-edge test walks up parent_id, not just the node itself: the
+      # compile copies a granted container's edges down to every registered
+      # descendant, so a user edge on an ancestor is a user's only path to
+      # this record just as one on the node would be, and deleting the node
+      # revokes it. The walk terminates because the tree is acyclic-guarded.
       def deletable_nodes(reach, db)
         where = <<~SQL
           r.external_type IN (#{reach[:id].map { |type| db.literal(type) }.join(', ')})
           AND r.external_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM super_auth_edges e WHERE e.resource_id = r.id AND e.user_id IS NOT NULL)
+          AND NOT EXISTS (
+            WITH RECURSIVE up AS (
+              SELECT r.id, r.parent_id
+              UNION ALL
+              SELECT p.id, p.parent_id FROM super_auth_resources p JOIN up ON p.id = up.parent_id
+            )
+            SELECT 1 FROM up JOIN super_auth_edges e ON e.resource_id = up.id WHERE e.user_id IS NOT NULL
+          )
           AND NOT EXISTS (SELECT 1 FROM super_auth_resources child WHERE child.parent_id = r.id)
         SQL
         db.fetch("SELECT r.external_type AS type, count(*) AS count FROM super_auth_resources r WHERE #{where} GROUP BY 1 ORDER BY 1").map do |group|
