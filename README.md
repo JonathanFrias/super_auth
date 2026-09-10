@@ -406,6 +406,20 @@ table, in a migration, with the arguments it should now carry. A parent grant is
 invisible to a policy that predates it: the holder sees nothing, fail closed, and it
 reads as a permissions bug.
 
+**So the migration goes out before the code that needs it, never after.** The two orders
+are not symmetric, because the invariant is that the policy must never be narrower than
+any tier's ORM scope. Policy ahead of code is safe: the policy admits rows the old scope
+does not ask for, and the ORM filters them out, so the extra reach is unreachable. Code
+ahead of policy is the broken one: the scope admits a row on its parent column that the
+policy has never heard of, the database denies it, and the user sees nothing. Both fail
+closed, but only one of them fails *visibly to a user*, and it reads as a permissions bug
+rather than as a deploy-ordering mistake — which is what makes it expensive to diagnose.
+
+The same asymmetry covers a process you forgot to restart. A worker or a dev server still
+holding the old gem against a freshly migrated policy is on the safe side of it, and the
+swap is behaviourally invisible — it keeps working, and keeps answering exactly as it did
+before. Restart it anyway, so that what you are testing is what you are running.
+
 `enable` records `SuperAuth::RLS::POLICY_VERSION` and the reach in the policy's comment,
 never `ALTER`s a policy, and drops every name it has ever given one before creating
 `super_auth` (Postgres ORs permissive policies, so one left behind under an old name would
