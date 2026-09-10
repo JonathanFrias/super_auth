@@ -52,8 +52,16 @@ RSpec.describe SuperAuth do
     end
     SuperAuth.db.run "create table if not exists resources (id #{pk}, name varchar(255))"
     SuperAuth.db.run "create table if not exists external_users (id #{pk}, name varchar(255))"
-    SuperAuth.db.run "create table if not exists documents (id #{pk}, name varchar(255), organization_id bigint)"
-    SuperAuth.db.run "create table if not exists mistyped_documents (id #{pk}, name varchar(255), organization_id varchar(255))"
+    # Drop-then-create, never "if not exists": spec/rls_spec.rb builds its own
+    # documents (id, name) and its ActiveRecord examples leave that shape in
+    # the connection's schema cache, so under the wrong seed a kept table and
+    # a stale column list made the preflight refuse organization_id. The
+    # shape here is this file's, and the cache is told.
+    SuperAuth.db.run "drop table if exists documents"
+    SuperAuth.db.run "drop table if exists mistyped_documents"
+    SuperAuth.db.run "create table documents (id #{pk}, name varchar(255), organization_id bigint)"
+    SuperAuth.db.run "create table mistyped_documents (id #{pk}, name varchar(255), organization_id varchar(255))"
+    %w[documents mistyped_documents].each { |table| ActiveRecord::Base.connection.schema_cache.clear_data_source_cache!(table) }
 
     # SuperAuth::ActiveRecord::User.itself # Loads if it it hasn't been loaded yet. TODO: Make this the normal ApplicationRecord rails style
 
@@ -61,6 +69,10 @@ RSpec.describe SuperAuth do
 
     SuperAuth.uninstall_migrations
   ensure
+    # Nothing leaks onward either: the next file that wants a documents table
+    # builds its own.
+    SuperAuth.db.run "drop table if exists documents"
+    SuperAuth.db.run "drop table if exists mistyped_documents"
     SuperAuth.external_id_type = :string
     reset_super_auth_column_information
   end

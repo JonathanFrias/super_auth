@@ -4218,7 +4218,7 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(role: @employee, group: @organization)
     SuperAuth::Edge.create(permission: @read_access, resource: resource)
 
-    edges = SuperAuth::Edge.users_groups_roles_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_groups_roles_permissions_resources.sort_by { |v| [v[:group_path].to_s, v[:user_name].to_s] }
     expect(edges.map { |e| e[:user_name] }).to eq ['CEO', 'Buy this pen!', 'Señor Dev', 'gotta get good']
     expect(edges.map { |e| e[:group_name] }).to eq ['Foobar Corp', 'marketing', 'developers', 'feature1']
     expect(edges.map { |e| e[:role_name] }).to eq ['production support', 'production support', 'production support', 'production support']
@@ -4235,7 +4235,7 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(permission: @reboot_access, group: @marketing)
     SuperAuth::Edge.create(resource: resource, permission: @reboot_access)
 
-    edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_groups_permissions_resources.sort_by { |v| [v[:group_path].to_s, v[:user_name].to_s] }
 
     expect(edges.count).to eq 1
   end
@@ -4284,7 +4284,7 @@ RSpec.describe SuperAuth do
     SuperAuth::Edge.create(role: @prod_access, permission: @reboot_access)
     SuperAuth::Edge.create(permission: @reboot_access, resource: resource)
 
-    edges = SuperAuth::Edge.users_roles_permissions_resources.sort_by { |v| v[:group_path] }
+    edges = SuperAuth::Edge.users_roles_permissions_resources.sort_by { |v| [v[:group_path].to_s, v[:user_name].to_s] }
 
     expect(edges.count).to eq 1
   end
