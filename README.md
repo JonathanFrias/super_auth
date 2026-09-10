@@ -480,6 +480,18 @@ not your compiled-row count. Take your own two numbers from the queries above be
 deciding you have a problem: most installs sit far below the knee, where none of this is
 worth doing.
 
+**Upgrading ends this, and there is nothing to monitor afterwards.** The knee above belongs
+to the correlated shape, where the type-level rows are re-scanned once per outer row. 0.9.0's
+type-level step is one uncorrelated `EXISTS` that names no column of the protected table, so
+Postgres plans it once per query and answers it with an index seek on the asserted identity —
+what *other* principals hold is not in the lookup. Measured on the same rig as above (uuid,
+8,000 claims, a holder with 20 per-record grants and no type-level row of their own, so the
+step has to look and find nothing): 1.3 ms at 0 type-level rows, 1.1 ms at 1,000, 1.6 ms at
+50,000, 1.6 ms at 150,000, 1.1 ms at 500,000, 1.2 ms at 1,000,000 — flat across four orders
+of magnitude, where the correlated shape took 350,173 ms at 150,000. So once you are on
+0.9.0 this count stops being a number worth watching, and the gem deliberately has no
+diagnostic for it.
+
 Re-time any statement you believe is fine with `SET LOCAL synchronize_seqscans = off`
 inside the transaction. Without it the same statement measured 20,463 ms and 8.495 ms
 minutes apart, because each sequence scan starts where the last one stopped; warm numbers

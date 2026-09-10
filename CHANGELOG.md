@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Documentation
+
+- The 0.7.x/0.8.0 advisory now says what upgrading does to the curve, and that there is nothing to watch afterwards. The knee it describes belongs to the correlated shape, where type-level rows are re-scanned once per outer row; 0.9.0's type-level step is one uncorrelated `EXISTS` naming no column of the protected table, so it plans once per query and resolves as an index seek on the asserted identity, and what other principals hold is not in the lookup. Measured on the advisory's own rig — uuid, 8,000 claims, a holder with 20 per-record grants and no type-level row of its own, so the step must look and find nothing — one `SELECT count(*)`: 1.3 ms at 0 type-level rows, 1.1 ms at 1,000, 1.6 ms at 50,000, 1.6 ms at 150,000, 1.1 ms at 500,000, 1.2 ms at 1,000,000. Flat across four orders of magnitude, against 350,173 ms for the correlated shape at 150,000. This closes the question of whether `coverage` should grow a bucket reporting per-protected-type type-level counts against those thresholds: on 0.9.0 there are no thresholds, and a bucket flagging them would be measuring a hazard the release removed.
+
 ## [0.9.0] - 2026-09-09
 
 ### Added
