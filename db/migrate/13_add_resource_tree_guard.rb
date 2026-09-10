@@ -16,45 +16,13 @@ Sequel.migration do
   # and compile guards already hold there; a second and third implementation
   # of the same check is not worth what it costs to carry. On those two this
   # migration does nothing, and says so here rather than in a gap in the
-  # numbering.
+  # numbering. The SQL lives in SuperAuth::TreeGuard, which a host also calls
+  # from its test setup: db/schema.rb cannot carry a trigger.
   up do
-    if database_type == :postgres
-      run <<~SQL
-        CREATE OR REPLACE FUNCTION super_auth_resources_tree_guard() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-          IF NEW.parent_id = NEW.id THEN
-            RAISE EXCEPTION 'super_auth_resources: node % cannot be its own parent', NEW.id
-              USING ERRCODE = 'check_violation';
-          END IF;
-          IF EXISTS (
-            WITH RECURSIVE ancestors(id, parent_id) AS (
-              SELECT r.id, r.parent_id FROM super_auth_resources r WHERE r.id = NEW.parent_id
-              UNION
-              SELECT r.id, r.parent_id FROM super_auth_resources r JOIN ancestors a ON r.id = a.parent_id
-            )
-            SELECT 1 FROM ancestors WHERE ancestors.id = NEW.id
-          ) THEN
-            RAISE EXCEPTION 'super_auth_resources: parent_id % is inside the subtree of node %, which would close a cycle', NEW.parent_id, NEW.id
-              USING ERRCODE = 'check_violation';
-          END IF;
-          RETURN NEW;
-        END
-        $$;
-      SQL
-      run "DROP TRIGGER IF EXISTS super_auth_resources_tree_guard ON super_auth_resources"
-      run <<~SQL
-        CREATE TRIGGER super_auth_resources_tree_guard
-          BEFORE INSERT OR UPDATE OF parent_id ON super_auth_resources
-          FOR EACH ROW WHEN (NEW.parent_id IS NOT NULL)
-          EXECUTE FUNCTION super_auth_resources_tree_guard()
-      SQL
-    end
+    SuperAuth::TreeGuard.install(db: self)
   end
 
   down do
-    if database_type == :postgres
-      run "DROP TRIGGER IF EXISTS super_auth_resources_tree_guard ON super_auth_resources"
-      run "DROP FUNCTION IF EXISTS super_auth_resources_tree_guard()"
-    end
+    SuperAuth::TreeGuard.remove(db: self)
   end
 end

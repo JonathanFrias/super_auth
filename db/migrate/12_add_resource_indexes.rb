@@ -22,12 +22,11 @@ Sequel.migration do
     end
   end
 
+  # No down: up skipped an index a host already owned under the same name,
+  # and a migration cannot tell afterwards which of the two it created, so a
+  # rollback that dropped by name would take a host's own index with it. Two
+  # indexes left behind cost nothing; a lost one costs a sequence scan on a
+  # hot path. The tables' own drop removes them on a full uninstall.
   down do
-    if indexes(:super_auth_authorizations).key?(:idx_sa_auth_by_resource)
-      drop_index :super_auth_authorizations, [:resource_external_id, :resource_external_type], name: :idx_sa_auth_by_resource
-    end
-    if indexes(:super_auth_resources).key?(:idx_sa_resources_by_external)
-      drop_index :super_auth_resources, [:external_type, :external_id], name: :idx_sa_resources_by_external
-    end
   end
 end

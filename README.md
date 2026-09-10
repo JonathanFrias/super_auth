@@ -440,6 +440,13 @@ context when the role may assert it and as the caller's own identity otherwise, 
 
 ### Notes
 
+- A test database built from `db/schema.rb` has neither the policies nor the `parent_id`
+  cycle trigger: Rails' default `schema_format` is `:ruby`, and `schema.rb` cannot carry a
+  policy, a `FORCE ROW LEVEL SECURITY` flag, a function or a trigger. Call
+  `SuperAuth::RLS.enable(...)` for each protected table and `SuperAuth::TreeGuard.install`
+  from the test setup, and assert `SuperAuth::RLS.current?(...)` and
+  `SuperAuth::TreeGuard.installed?` there, so a forgotten re-enable fails the suite rather
+  than silently testing an unprotected database.
 - Queries with no identity asserted see nothing, and writes are rejected — fail
   closed, by design. A client that has never heard of super_auth cannot accidentally
   reach protected rows.

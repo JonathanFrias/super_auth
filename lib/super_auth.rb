@@ -1,5 +1,6 @@
 require_relative "super_auth/version"
 require_relative "super_auth/reach"
+require_relative "super_auth/tree_guard"
 require "sequel"
 
 module SuperAuth
@@ -84,7 +85,13 @@ module SuperAuth
 
   # Both ORMs cache column types per model class; after (re)installing the
   # migrations those caches can describe a previous schema (e.g. a different
-  # external_id_type) and silently miscast assigned values.
+  # external_id_type) and silently miscast assigned values. The Sequel models
+  # are also rebound to SuperAuth.db: a host requires them before it has
+  # connected anything, so Sequel binds them to whatever Sequel::Model.db is
+  # at that moment (a mock, in a Rails boot), and a class left on that
+  # binding answers `db.database_type` wrong and runs its queries nowhere.
+  # Rebinding here, and from SuperAuth.db=, keeps Model.db equal to
+  # SuperAuth.db for every model, so no host needs to do it by hand.
   def self.refresh_model_schemas
     models = %w[User Group Permission Role Resource Edge Authorization]
     if defined?(SuperAuth::ActiveRecord::User)
@@ -95,7 +102,20 @@ module SuperAuth
     if defined?(SuperAuth::User) && SuperAuth::User.respond_to?(:set_dataset)
       models.each do |name|
         model = SuperAuth.const_get(name)
-        model.set_dataset(model.dataset)
+        if @db.nil? || model.db.equal?(@db)
+          model.set_dataset(model.dataset)
+        else
+          # A dataset on the target database is the one way to move a model
+          # that already has one: Sequel refuses Model.db= after that point.
+          # A host may set SuperAuth.db before its migrations have run, so a
+          # missing table moves the binding and leaves the columns to the
+          # next refresh, which install_migrations makes.
+          begin
+            model.set_dataset(@db[model.table_name])
+          rescue Sequel::DatabaseError
+            nil
+          end
+        end
       end
     end
   end
@@ -208,8 +228,10 @@ module SuperAuth
     end
   end
 
+  # Models already loaded follow the new database; see refresh_model_schemas.
   def self.db=(db)
     @db = db
+    refresh_model_schemas if defined?(SuperAuth::User) && SuperAuth::User.respond_to?(:set_dataset)
   end
 end
 

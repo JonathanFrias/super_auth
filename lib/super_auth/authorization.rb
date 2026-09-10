@@ -14,13 +14,22 @@ class SuperAuth::Authorization < Sequel::Model(:super_auth_authorizations)
     # functions, 1.6-2.2s of optimisation and emission for a query that then
     # executes in milliseconds. SET LOCAL scopes the switch to this
     # transaction, so nothing leaks to the pooled connection.
+    #
+    # Everything here runs on SuperAuth.db, named, not on this class's own
+    # `db`. A host loads the models at require time, before it has connected
+    # anything, so Sequel binds them to whatever Sequel::Model.db is then — a
+    # mock in a Rails boot — and SuperAuth.db= rebinds them afterwards; the
+    # first consumer's binding of this one class had been left behind for
+    # months and nothing noticed until a branch on `db.database_type` here
+    # skipped the timestamp cast and Postgres refused the INSERT.
     def compile!
-      db.transaction do
-        db.run "SET LOCAL jit = off" if db.database_type == :postgres
+      SuperAuth.db.transaction do
+        SuperAuth.db.run "SET LOCAL jit = off" if SuperAuth.db.database_type == :postgres
         assert_compilable!
-        dataset.delete
-        dataset.insert(SuperAuth::Edge::AUTHORIZATION_COLUMNS, compile_source)
-        dataset.count
+        table = SuperAuth.db[:super_auth_authorizations]
+        table.delete
+        table.insert(SuperAuth::Edge::AUTHORIZATION_COLUMNS, compile_source)
+        table.count
       end
     end
 
@@ -47,7 +56,7 @@ class SuperAuth::Authorization < Sequel::Model(:super_auth_authorizations)
     # the "2026" of a date and drop the rest.
     def compile_source
       graph = SuperAuth::Edge.authorizations
-      return graph unless db.database_type == :postgres
+      return graph unless SuperAuth.db.database_type == :postgres
 
       columns = SuperAuth::Edge::AUTHORIZATION_COLUMNS.map do |column|
         column.end_with?("_at") ? Sequel.cast(column, :timestamp).as(column) : column

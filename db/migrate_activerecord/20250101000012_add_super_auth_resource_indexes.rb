@@ -15,12 +15,9 @@ class AddSuperAuthResourceIndexes < ActiveRecord::Migration[7.0]
     end
   end
 
+  # No down, for the reason in the Sequel twin: up skipped an index the host
+  # already owned under the same name, and a rollback dropping by name would
+  # take it with it.
   def down
-    if index_name_exists?(:super_auth_authorizations, :idx_sa_auth_by_resource)
-      remove_index :super_auth_authorizations, name: :idx_sa_auth_by_resource
-    end
-    if index_name_exists?(:super_auth_resources, :idx_sa_resources_by_external)
-      remove_index :super_auth_resources, name: :idx_sa_resources_by_external
-    end
   end
 end
